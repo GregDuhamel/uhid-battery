@@ -1,6 +1,6 @@
 [package]
 name = "uhid-battery"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Publish a battery level to UPower and the desktop through a virtual HID device (/dev/uhid)"
