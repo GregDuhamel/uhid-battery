@@ -55,6 +55,10 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # A library does not commit Cargo.lock, and cargo-audit reads nothing
+      # else: resolve the dependencies as a fresh consumer would.
+      - run: cargo generate-lockfile
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
