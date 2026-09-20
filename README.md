@@ -21,12 +21,16 @@ of its pitfalls the hard way:
 
 ## Use
 
-It is not on crates.io; depend on it through git:
+It is not on crates.io; depend on it through git, pinned to a release tag:
 
 ```toml
 [dependencies]
-uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery" }
+uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.1.0" }
 ```
+
+Releases are cut from the *Release* workflow (Actions → Release → Run workflow,
+pick the semver bump): it runs the lints and tests, writes the version to
+`Cargo.toml`, tags, and publishes the GitHub release.
 
 ```rust
 use std::time::{Duration, Instant};

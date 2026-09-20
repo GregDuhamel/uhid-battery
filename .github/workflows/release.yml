@@ -1,0 +1,85 @@
+name: Release
+
+# Same flow as razerd: pick a semver bump, and the workflow computes the next
+# version from the latest tag, writes it to Cargo.toml, tags and publishes a
+# GitHub release. There is no binary to attach - this is a library, consumed as
+# a git dependency (`tag = "vX.Y.Z"`) - so the tests are what gates the tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semver bump"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  release:
+    name: Test, tag and release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: version
+        run: |
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          current=${latest#v}
+          current=${current:-0.0.0}
+          IFS='.' read -r major minor patch <<< "$current"
+          case "${{ inputs.bump }}" in
+            major) major=$((major+1)); minor=0; patch=0 ;;
+            minor) minor=$((minor+1)); patch=0 ;;
+            patch) patch=$((patch+1)) ;;
+          esac
+          echo "version=${major}.${minor}.${patch}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Cargo.toml version
+        run: sed -i '0,/^version = .*/s//version = "${{ steps.version.outputs.version }}"/' Cargo.toml
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      # A tag is a promise to the daemons that pin it: do not make one that
+      # does not pass what every pull request has to.
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --all-targets
+
+      - name: cargo test --doc
+        run: cargo test --doc
+
+      - name: Commit version bump and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet Cargo.toml; then
+            git add Cargo.toml
+            git commit -m "chore: release v${{ steps.version.outputs.version }}"
+            git push origin main
+          fi
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
