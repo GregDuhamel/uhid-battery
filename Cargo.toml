@@ -1,0 +1,25 @@
+[package]
+name = "uhid-battery"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Publish a battery level to UPower and the desktop through a virtual HID device (/dev/uhid)"
+authors = ["GregDuhamel <gregory.duhamel@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/GregDuhamel/uhid-battery"
+keywords = ["uhid", "battery", "upower", "hid", "power-supply"]
+categories = ["os::linux-apis", "hardware-support"]
+# Consumed as a git dependency; not meant for crates.io.
+publish = false
+
+[dependencies]
+rustix = { version = "1.0", features = ["event", "fs", "std"] }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
