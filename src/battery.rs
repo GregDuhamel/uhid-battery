@@ -42,13 +42,38 @@ pub struct Identity {
     /// [`Kind::udev_rule`] relies on; `<daemon>/<device>` is a good shape.
     pub phys: String,
     /// Unique ID. The kernel names the power supply `hid-<uniq>-battery[-<n>]`,
-    /// so it has to be unique on the machine and filesystem-safe. Never put a
-    /// string that came from the device in here.
+    /// so it has to be unique on the machine and filesystem-safe: not empty,
+    /// and without a `/`. Never put a string that came from the device in here.
     pub uniq: String,
     /// Vendor ID, usually mirrored from the real device.
     pub vendor: u32,
     /// Product ID, usually mirrored from the real device.
     pub product: u32,
+}
+
+impl Identity {
+    /// Checks that the kernel will take the strings as they are.
+    ///
+    /// Each one lands in a fixed-size, NUL-terminated field. A string that did
+    /// not fit would be cut short without a word, and for `uniq` that means a
+    /// power supply under a name [`Battery::power_supply`] never looks for.
+    fn validate(&self) -> io::Result<()> {
+        let fits = |value: &str, field: usize| value.len() < field && !value.contains('\0');
+        if !fits(&self.name, event::LEN_NAME) {
+            return Err(invalid("the name must be under 128 bytes, without NUL"));
+        }
+        if !fits(&self.phys, event::LEN_PHYS) {
+            return Err(invalid("phys must be under 64 bytes, without NUL"));
+        }
+        if self.uniq.is_empty() || self.uniq.contains('/') || !fits(&self.uniq, event::LEN_UNIQ) {
+            return Err(invalid("uniq must be 1 to 63 bytes, without NUL or '/'"));
+        }
+        Ok(())
+    }
+}
+
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
 /// A failed [`Battery::create`]. It carries the handle back, because a handle
@@ -107,8 +132,10 @@ impl Battery {
     ///
     /// # Errors
     ///
-    /// Fails if the kernel refuses the device, for instance because one already
-    /// exists on this handle. The handle comes back in the error.
+    /// Fails if `identity` holds a string the kernel would truncate or that
+    /// cannot name a power supply, or if the kernel refuses the device, for
+    /// instance because one already exists on this handle. The handle comes
+    /// back in the error.
     pub fn create(
         handle: Handle,
         identity: &Identity,
@@ -116,15 +143,19 @@ impl Battery {
         percent: u8,
         charging: bool,
     ) -> Result<Self, CreateError> {
-        let created = event::create2(
-            &identity.name,
-            &identity.phys,
-            &identity.uniq,
-            identity.vendor,
-            identity.product,
-            kind.descriptor(),
-        )
-        .and_then(|event| handle.write(&event));
+        let created = identity
+            .validate()
+            .and_then(|()| {
+                event::create2(
+                    &identity.name,
+                    &identity.phys,
+                    &identity.uniq,
+                    identity.vendor,
+                    identity.product,
+                    kind.descriptor(),
+                )
+            })
+            .and_then(|event| handle.write(&event));
         if let Err(source) = created {
             return Err(CreateError { handle, source });
         }
@@ -256,13 +287,14 @@ impl Battery {
     ///
     /// Fails if servicing the battery fails.
     pub fn wait_for_power_supply(&mut self, timeout: Duration) -> io::Result<Option<PathBuf>> {
-        let deadline = Instant::now() + timeout;
+        // A timeout too long to be a point in time is no deadline at all.
+        let deadline = Instant::now().checked_add(timeout);
         loop {
             self.service()?;
             if let Some(path) = self.power_supply() {
                 return Ok(Some(path));
             }
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Ok(None);
             }
             sleep(REGISTRATION_POLL);
@@ -325,4 +357,42 @@ fn poll(fds: &mut [PollFd<'_>], timeout: Duration) -> io::Result<usize> {
         tv_nsec: timeout.subsec_nanos().into(),
     };
     rustix::event::poll(fds, Some(&timeout)).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(name: &str, phys: &str, uniq: &str) -> Identity {
+        Identity {
+            name: name.into(),
+            phys: phys.into(),
+            uniq: uniq.into(),
+            vendor: 0,
+            product: 0,
+        }
+    }
+
+    #[test]
+    fn an_identity_the_kernel_would_alter_is_refused() {
+        assert!(
+            identity("Test", "daemon/test", "daemon-test")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            identity(&"n".repeat(127), &"p".repeat(63), &"u".repeat(63))
+                .validate()
+                .is_ok()
+        );
+        assert!(identity("", "", "u").validate().is_ok());
+
+        assert!(identity(&"n".repeat(128), "p", "u").validate().is_err());
+        assert!(identity("n", &"p".repeat(64), "u").validate().is_err());
+        assert!(identity("n", "p", &"u".repeat(64)).validate().is_err());
+        assert!(identity("n", "p", "").validate().is_err());
+        assert!(identity("n", "p", "a/b").validate().is_err());
+        assert!(identity("n", "p", "a\0b").validate().is_err());
+        assert!(identity("n\0", "p", "u").validate().is_err());
+    }
 }

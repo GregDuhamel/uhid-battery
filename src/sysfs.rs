@@ -8,8 +8,8 @@ const POWER_SUPPLY_CLASS: &str = "/sys/class/power_supply";
 ///
 /// The name is not stable across kernels: it was `hid-<uniq>-battery` for
 /// years, and recent kernels append the report ID (`hid-<uniq>-battery-1`) now
-/// that a HID device may carry several batteries. Match on the prefix rather
-/// than guess.
+/// that a HID device may carry several batteries. Match on the prefix, and
+/// accept nothing after it but that number.
 #[must_use]
 pub fn find_power_supply(uniq: &str) -> Option<PathBuf> {
     find_power_supply_in(Path::new(POWER_SUPPLY_CLASS), uniq)
@@ -25,9 +25,18 @@ pub(crate) fn find_power_supply_in(class_dir: &Path, uniq: &str) -> Option<PathB
                 .file_name()
                 .to_string_lossy()
                 .strip_prefix(&prefix)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+                .is_some_and(is_report_suffix)
         })
         .map(|entry| entry.path())
+}
+
+/// What may follow `hid-<uniq>-battery`: nothing, or `-<report id>`. Anything
+/// looser would claim the supply of a device whose unique ID is `<uniq>-battery`.
+fn is_report_suffix(rest: &str) -> bool {
+    rest.is_empty()
+        || rest
+            .strip_prefix('-')
+            .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 #[cfg(test)]
@@ -43,6 +52,9 @@ mod tests {
             "hid-razerd-battery",
             // Somebody else's device whose uniq merely starts the same way.
             "hid-headset-3329-4b18-batteryx",
+            // And one whose uniq is ours followed by `-battery`.
+            "hid-razerd-battery-battery",
+            "hid-absent-battery-",
         ] {
             std::fs::create_dir_all(dir.join(name)).unwrap();
         }

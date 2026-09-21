@@ -31,19 +31,21 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Compute next version
         id: version
+        env:
+          BUMP: ${{ inputs.bump }}
         run: |
           latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
           current=${latest#v}
           current=${current:-0.0.0}
           IFS='.' read -r major minor patch <<< "$current"
-          case "${{ inputs.bump }}" in
+          case "$BUMP" in
             major) major=$((major+1)); minor=0; patch=0 ;;
             minor) minor=$((minor+1)); patch=0 ;;
             patch) patch=$((patch+1)) ;;
@@ -58,12 +60,13 @@ jobs:
         run: sed -i 's/tag = "v[0-9][0-9.]*"/tag = "v${{ steps.version.outputs.version }}"/' README.md
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
+          toolchain: stable
           components: clippy
 
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # A tag is a promise to the daemons that pin it: do not make one that
       # does not pass what every pull request has to.
@@ -92,7 +95,7 @@ jobs:
           git push origin "v${{ steps.version.outputs.version }}"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
