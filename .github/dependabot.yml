@@ -1,5 +1,13 @@
 version: 2
 updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+
   # The workflows pin actions to a commit; this is what moves the pins.
   - package-ecosystem: github-actions
     directory: /
