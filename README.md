@@ -25,7 +25,7 @@ It is not on crates.io; depend on it through git, pinned to a release tag:
 
 ```toml
 [dependencies]
-uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.1.1" }
+uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.1.2" }
 ```
 
 Releases are cut from the *Release* workflow (Actions → Release → Run workflow,
