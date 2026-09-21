@@ -60,9 +60,14 @@ impl Kind {
     /// "headset" when a sibling node carries the properties systemd puts on a
     /// sound card, and it accepts an `input` node as that sibling - which the
     /// virtual device has. Install the rule under `/etc/udev/rules.d`.
+    ///
+    /// Also `None` when `phys` holds a double quote or a control character:
+    /// either would end the match early and let the rest be read as rule text,
+    /// in a file that root installs.
     #[must_use]
     pub fn udev_rule(self, phys: &str) -> Option<String> {
-        (self == Self::Headset).then(|| {
+        let quotable = !phys.chars().any(|c| c == '"' || c.is_control());
+        (self == Self::Headset && quotable).then(|| {
             format!(
                 "SUBSYSTEM==\"input\", KERNEL==\"input*\", ATTR{{phys}}==\"{phys}\", \
                  ENV{{SOUND_INITIALIZED}}=\"1\", ENV{{SOUND_FORM_FACTOR}}=\"headset\""
@@ -257,5 +262,7 @@ mod tests {
             rule.contains(r#"ENV{SOUND_FORM_FACTOR}="headset""#),
             "{rule}"
         );
+        assert_eq!(Kind::Headset.udev_rule("x\", RUN+=\"/bin/true"), None);
+        assert_eq!(Kind::Headset.udev_rule("x\nKERNEL==\"*\""), None);
     }
 }

@@ -94,6 +94,9 @@ Every item below cost an afternoon. None of them produces an error message.
 * **A handle passed by systemd cannot be reopened.** Every fallible operation
   that consumes a `Handle` gives it back: `CreateError::into_parts()`,
   `Battery::destroy()`.
+* **The kernel truncates the identity strings without a word.** A `uniq` cut
+  short names a power supply nobody looks for, so `Battery::create` refuses an
+  `Identity` that does not fit, and a `uniq` that is empty or holds a `/`.
 * **An inherited descriptor could be anything.** `Handle::from_fd` checks that
   it really is the uhid character device (10:239) before events are written
   into it.
@@ -114,7 +117,9 @@ DeviceAllow=/dev/uhid rw
 ```
 
 `Handle::inherited("uhid")` then returns the handle, and the node stays
-`root:root 0600`.
+`root:root 0600`. It closes whatever else the service manager passed; a daemon
+that is also socket-activated calls `Handle::inherited_with_others("uhid")` and
+gets those descriptors back with their names.
 
 ## Testing
 

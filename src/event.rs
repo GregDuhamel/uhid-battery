@@ -32,11 +32,11 @@ pub(crate) const EIO: u16 = 5;
 // Field offsets inside `struct uhid_event`: the 4-byte type, then the union.
 const OFF_TYPE: usize = 0;
 const OFF_CREATE_NAME: usize = 4;
-const LEN_NAME: usize = 128;
+pub(crate) const LEN_NAME: usize = 128;
 const OFF_CREATE_PHYS: usize = OFF_CREATE_NAME + LEN_NAME;
-const LEN_PHYS: usize = 64;
+pub(crate) const LEN_PHYS: usize = 64;
 const OFF_CREATE_UNIQ: usize = OFF_CREATE_PHYS + LEN_PHYS;
-const LEN_UNIQ: usize = 64;
+pub(crate) const LEN_UNIQ: usize = 64;
 const OFF_CREATE_RD_SIZE: usize = OFF_CREATE_UNIQ + LEN_UNIQ;
 const OFF_CREATE_BUS: usize = OFF_CREATE_RD_SIZE + 2;
 const OFF_CREATE_VENDOR: usize = OFF_CREATE_BUS + 2;
@@ -183,7 +183,8 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 /// Copies `value` into a fixed-size, NUL-padded field, truncating on a `char`
-/// boundary so the kernel never sees a partial UTF-8 sequence.
+/// boundary so the kernel never sees a partial UTF-8 sequence. `Identity` is
+/// validated before it gets here, so the truncation is a backstop.
 fn put_str(field: &mut [u8], value: &str) {
     let mut end = value.len().min(field.len() - 1);
     while end > 0 && !value.is_char_boundary(end) {

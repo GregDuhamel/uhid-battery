@@ -1,13 +1,12 @@
 //! An open `/dev/uhid`, opened here or handed over by the service manager.
 
 use std::env;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io;
-use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::path::Path;
 
-use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl, makedev};
+use rustix::fs::{FileType, OFlags, fcntl_getfl, fcntl_setfl, fstat, makedev};
 use rustix::io::{Errno, FdFlags, fcntl_setfd};
 
 use crate::event::{self, Buffer, EVENT_SIZE, Event};
@@ -53,16 +52,13 @@ impl Handle {
     /// Fails if the descriptor is not `/dev/uhid`: an inherited descriptor could
     /// be anything, and uhid events must not be written into something else.
     pub fn from_fd(fd: OwnedFd) -> io::Result<Self> {
-        let file = File::from(fd);
-        let meta = file.metadata()?;
-        if !meta.file_type().is_char_device() || meta.rdev() != makedev(UHID_MAJOR, UHID_MINOR) {
+        if !is_uhid(&fd)? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "the descriptor is not the uhid character device",
             ));
         }
 
-        let fd = OwnedFd::from(file);
         let flags = fcntl_getfl(&fd)?;
         fcntl_setfl(&fd, flags | OFlags::NONBLOCK)?;
         Ok(Self { fd })
@@ -78,41 +74,61 @@ impl Handle {
     /// the descriptor down.
     ///
     /// Returns an empty vector when the process was not started that way.
-    /// Descriptors passed under another name are closed, as are those that turn
-    /// out not to be `/dev/uhid`; the `LISTEN_*` variables are removed so
-    /// neither a second call nor a child process claims the same descriptors.
+    /// Every other descriptor the service manager passed is closed - one under
+    /// another name, or one that turns out not to be `/dev/uhid`. A daemon that
+    /// is also handed a socket wants [`Handle::inherited_with_others`] instead.
+    /// The `LISTEN_*` variables are removed so neither a second call nor a
+    /// child process claims the same descriptors.
     ///
     /// Call this early, before spawning threads: it edits the environment.
     #[must_use]
     pub fn inherited(prefix: &str) -> Vec<Self> {
+        Self::inherited_with_others(prefix).0
+    }
+
+    /// As [`Handle::inherited`], but hands back the descriptors it did not
+    /// adopt, each with the name it was passed under, instead of closing them.
+    ///
+    /// The variables are removed all the same, so this is the only chance to
+    /// get at those descriptors.
+    #[must_use]
+    pub fn inherited_with_others(prefix: &str) -> (Vec<Self>, Vec<(String, OwnedFd)>) {
         let Some(count) = listen_fds_count() else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let names = env::var("LISTEN_FDNAMES").unwrap_or_default();
         let mut names = names.split(':');
 
-        let handles = (0..count)
-            .filter_map(|offset| {
-                // SAFETY: by the sd_listen_fds protocol the descriptors in
-                // `LISTEN_FDS_START..LISTEN_FDS_START + count` belong to this
-                // process, this is the only place that adopts them, and the
-                // variables are cleared below so nothing adopts them again.
-                #[allow(unsafe_code)]
-                let fd = unsafe { OwnedFd::from_raw_fd(LISTEN_FDS_START + offset) };
-                // Passed descriptors come without FD_CLOEXEC.
-                let _ = fcntl_setfd(&fd, FdFlags::CLOEXEC);
+        let mut handles = Vec::new();
+        let mut others = Vec::new();
+        for offset in 0..count {
+            let name = names.next().unwrap_or_default();
+            // SAFETY: by the sd_listen_fds protocol the descriptors in
+            // `LISTEN_FDS_START..LISTEN_FDS_START + count` belong to this
+            // process, this is the only place that adopts them, and the
+            // variables are cleared below so nothing adopts them again.
+            #[allow(unsafe_code)]
+            let fd = unsafe { OwnedFd::from_raw_fd(LISTEN_FDS_START + offset) };
+            // Passed descriptors come without FD_CLOEXEC. A failure means the
+            // environment lied and the number is not an open descriptor: let
+            // go of it without closing what is not ours.
+            if fcntl_setfd(&fd, FdFlags::CLOEXEC).is_err() {
+                let _ = fd.into_raw_fd();
+                continue;
+            }
 
-                names
-                    .next()
-                    .unwrap_or_default()
-                    .starts_with(prefix)
-                    .then(|| Self::from_fd(fd).ok())
-                    .flatten()
-            })
-            .collect();
+            if name.starts_with(prefix) && is_uhid(&fd).unwrap_or(false) {
+                // Only fcntl() can still fail, and it took the descriptor.
+                if let Ok(handle) = Self::from_fd(fd) {
+                    handles.push(handle);
+                }
+            } else {
+                others.push((name.to_owned(), fd));
+            }
+        }
 
         unset_listen_vars();
-        handles
+        (handles, others)
     }
 
     pub(crate) fn write(&self, event: &Buffer) -> io::Result<()> {
@@ -151,6 +167,15 @@ impl AsFd for Handle {
     }
 }
 
+/// Whether `fd` is the uhid character device, whatever path it was opened by.
+fn is_uhid(fd: &OwnedFd) -> io::Result<bool> {
+    let stat = fstat(fd)?;
+    Ok(
+        FileType::from_raw_mode(stat.st_mode) == FileType::CharacterDevice
+            && stat.st_rdev == makedev(UHID_MAJOR, UHID_MINOR),
+    )
+}
+
 fn listen_fds_count() -> Option<RawFd> {
     let pid: u32 = env::var("LISTEN_PID").ok()?.parse().ok()?;
     if pid != std::process::id() {
@@ -158,7 +183,9 @@ fn listen_fds_count() -> Option<RawFd> {
         return None;
     }
     let count: RawFd = env::var("LISTEN_FDS").ok()?.parse().ok()?;
-    (count > 0).then_some(count)
+    // The bounds sd_listen_fds(3) applies: the last descriptor number has to
+    // be one a descriptor can have.
+    (count > 0 && count <= RawFd::MAX - LISTEN_FDS_START).then_some(count)
 }
 
 fn unset_listen_vars() {
@@ -174,6 +201,8 @@ fn unset_listen_vars() {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+
     use super::*;
 
     #[test]
