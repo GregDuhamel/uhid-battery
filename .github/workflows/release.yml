@@ -4,6 +4,11 @@ name: Release
 # version from the latest tag, writes it to Cargo.toml, tags and publishes a
 # GitHub release. There is no binary to attach - this is a library, consumed as
 # a git dependency (`tag = "vX.Y.Z"`) - so the tests are what gates the tag.
+#
+# main only takes pull requests, so the version bump is pushed to a
+# release/vX.Y.Z branch, tagged there, and brought back to main by a pull
+# request. That needs "Allow GitHub Actions to create and approve pull
+# requests" in the repository's Actions settings.
 
 on:
   workflow_dispatch:
@@ -24,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -71,13 +77,16 @@ jobs:
         run: cargo test --doc
 
       - name: Commit version bump and tag
+        id: bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet Cargo.toml README.md; then
+            git switch -c "release/v${{ steps.version.outputs.version }}"
             git add Cargo.toml README.md
             git commit -m "chore: release v${{ steps.version.outputs.version }}"
-            git push origin main
+            git push origin "release/v${{ steps.version.outputs.version }}"
+            echo "branch=release/v${{ steps.version.outputs.version }}" >> "$GITHUB_OUTPUT"
           fi
           git tag "v${{ steps.version.outputs.version }}"
           git push origin "v${{ steps.version.outputs.version }}"
@@ -87,3 +96,12 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
+
+      - name: Open the pull request that brings the bump back to main
+        if: steps.bump.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create --base main --head "${{ steps.bump.outputs.branch }}" \
+            --title "chore: release v${{ steps.version.outputs.version }}" \
+            --body "Version bump for v${{ steps.version.outputs.version }}, already tagged and released."
