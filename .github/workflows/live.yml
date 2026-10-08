@@ -7,9 +7,8 @@ name: Live
 #
 # The test binary is built as the runner's user and run under sudo so that
 # root needs no cargo, no toolchain and no target directory of its own. The
-# tests skip themselves with a message if /dev/uhid does not exist at all;
-# they fail if it exists and the kernel then builds no power supply, which is
-# the very thing they are here to catch.
+# tests only run where the kernel can expose a HID battery (see the kernel
+# check below); elsewhere the job builds them and warns.
 
 on:
   push:
@@ -50,6 +49,23 @@ jobs:
           fi
           ls -l /dev/uhid || echo "::warning::no /dev/uhid on this runner: the live tests will skip"
 
+      - name: Check that this kernel exposes HID batteries
+        id: kernel
+        # The power supply behind a HID battery comes from CONFIG_HID_BATTERY_STRENGTH,
+        # a build-time option, not a module: Ubuntu's generic kernel has it, the
+        # Azure kernel of the hosted runners does not. Without it uhid creates the
+        # device but no power supply ever appears, and the tests would fail for a
+        # reason that is not ours. So they only run where the kernel can pass them,
+        # and the skip is loud.
+        run: |
+          cfg="/boot/config-$(uname -r)"
+          if [ -e /dev/uhid ] && grep -q '^CONFIG_HID_BATTERY_STRENGTH=y' "$cfg" 2>/dev/null; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::kernel $(uname -r) cannot expose HID batteries (CONFIG_HID_BATTERY_STRENGTH or /dev/uhid missing): live tests skipped, only built"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build the live test binary
         id: build
         run: |
@@ -59,10 +75,11 @@ jobs:
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
 
       - name: Run the live tests as root
+        if: steps.kernel.outputs.ok == 'true'
         env:
           LIVE_TEST_BIN: ${{ steps.build.outputs.bin }}
         run: sudo -E "$LIVE_TEST_BIN" --ignored --nocapture --test-threads=1
 
       - name: Kernel log, for when the tests fail
-        if: failure()
+        if: failure() && steps.kernel.outputs.ok == 'true'
         run: sudo dmesg | tail -50 || true
