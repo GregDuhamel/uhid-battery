@@ -31,7 +31,7 @@ uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.
 
 Releases are cut from the *Release* workflow (Actions → Release → Run workflow,
 pick the semver bump): it runs the lints and tests, writes the version to
-`Cargo.toml`, tags, and publishes the GitHub release.
+`Cargo.toml` and to the snippet above, tags, and publishes the GitHub release.
 
 ```rust
 use std::time::{Duration, Instant};
@@ -66,8 +66,9 @@ A daemon with several devices hands them all to `uhid_battery::serve_all`,
 which waits on every one of them (and on an optional wake descriptor) until a
 deadline. When one of them fails the `ServeError` says which (`index()`), so
 the daemon can drop that one and carry on with the rest; `From<ServeError>
-for io::Error` is there for a daemon that does not care. Underneath are `Battery::service()`, `Battery::next_deadline()`,
-`AsFd` and `uhid_battery::poll::poll`, for a daemon that runs its own loop.
+for io::Error` is there for a daemon that does not care. Underneath are
+`Battery::service()`, `Battery::next_deadline()`, `AsFd` and
+`uhid_battery::poll::poll`, for a daemon that runs its own loop.
 
 `Battery::create` tells a failure apart from a mistake:
 `CreateError::kind()` is `InvalidIdentity` when the identity can never be
@@ -119,7 +120,8 @@ Every item below cost an afternoon. None of them produces an error message.
 ## Running unprivileged
 
 `/dev/uhid` lets its holder create arbitrary input devices — a keyboard, say —
-so do not widen its permissions. Let systemd open it and pass the descriptor:
+so do not widen its permissions. Let systemd open it and pass the descriptor
+(`OpenFile=` needs systemd 253 or later):
 
 ```ini
 [Service]
@@ -149,19 +151,43 @@ before spawning anything.
 cargo test          # no hardware, no privileges
 ```
 
-The unit tests stand a socket pair in for `/dev/uhid` and drive the whole
-state machine through it: what `create` writes, the push after `UHID_START`,
-`GET_REPORT` answered or refused, the re-push after a charging flip, every
-way `serve_until` returns.
+The unit tests stand a datagram socket pair in for `/dev/uhid` and drive the
+whole state machine through it: what `create` writes, the push after
+`UHID_START`, `GET_REPORT` answered or refused, the re-push after a charging
+flip, every way `serve_until` and `serve_all` return, `destroy`. They run under
+`cargo test` with the doctests, on both stable and the MSRV, in the *CI*
+workflow; *Lint* is rustfmt, clippy, rustdoc with warnings denied, and
+`cargo audit`.
 
 The acceptance tests talk to the real kernel — they create a battery of each
-kind and read it back from sysfs — and need root; the *Live* workflow runs
-them on every pull request, under `sudo`, on the runner's kernel:
+kind and read it back from sysfs — and need root:
 
 ```sh
 cargo test --test live --no-run
 sudo target/debug/deps/live-* --ignored --nocapture --test-threads=1
 ```
+
+The *Live* workflow builds them on every pull request and runs them under
+`sudo` where the runner's kernel can expose a HID battery: `/dev/uhid` present
+and `CONFIG_HID_BATTERY_STRENGTH=y`. The Azure kernel of GitHub's hosted
+runners lacks that option — the kernel accepts the device and never registers
+a power supply — so there the job only builds the binary and warns; the tests
+proper run on a self-hosted runner, or on a developer's machine as above.
+
+## Who uses it
+
+* [razerd](https://github.com/GregDuhamel/razerd) (`--upower`): one
+  `Kind::Mouse` battery for a Razer mouse, served with `serve_until` and the
+  dock's hidraw descriptor as the wake descriptor.
+* [HeadsetBatteryIndicator](https://github.com/GregDuhamel/HeadsetBatteryIndicator):
+  one `Kind::Headset` battery per wireless headset, all of them served through
+  `serve_all`, with the udev rule from `Kind::Headset.udev_rule(..)`.
+
+This crate is the publishing half of such a daemon. The other half — reading
+the real device over hidraw: finding its node through sysfs, feature and
+input reports, `poll()` with a timeout, telling an unplugged device from a
+transient error — is the sibling crate
+[hidraw](https://github.com/GregDuhamel/hidraw).
 
 ## License
 

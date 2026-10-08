@@ -18,9 +18,10 @@ use crate::event;
 /// assert_eq!(identity.uniq, "my-daemon-maxwell");
 /// ```
 ///
-/// The fields can be read but not written: the struct is `#[non_exhaustive]`
-/// so that a later field (`version`, say) does not break every daemon that
-/// builds one.
+/// The fields are public, but the struct is `#[non_exhaustive]`: a daemon can
+/// read them, and change one in place, but the struct literal does not build
+/// outside this crate, so that a later field (`version`, say) does not break
+/// every daemon that builds one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Identity {

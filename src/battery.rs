@@ -565,7 +565,6 @@ fn wait(fds: &mut [PollFd<'_>], with_wake: bool, timeout: Option<Duration>) -> i
 mod tests {
     use std::os::fd::OwnedFd;
     use std::os::unix::net::UnixDatagram;
-    use std::process::{Command, Stdio};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
@@ -605,15 +604,17 @@ mod tests {
         remaining <= delay && remaining + Duration::from_millis(100) >= delay
     }
 
-    /// A pipe whose writer is gone, as a hung-up wake descriptor.
+    /// A pipe whose writer is gone, as a hung-up wake descriptor: `poll()`
+    /// reports `POLLHUP` on it, and never `POLLIN`.
+    ///
+    /// Made in-process on purpose. Spawning a child for it would copy this
+    /// process's descriptor table between `fork()` and `exec()`, and a fake
+    /// kernel another test had just dropped would live on in that copy long
+    /// enough for the write it expects to fail to succeed.
     fn hung_up_pipe() -> OwnedFd {
-        let mut child = Command::new("true")
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("spawning `true`");
-        let reader = child.stdout.take().expect("the pipe");
-        child.wait().expect("waiting for `true`");
-        OwnedFd::from(reader)
+        let (reader, writer) = rustix::pipe::pipe().expect("a pipe");
+        drop(writer);
+        reader
     }
 
     #[test]

@@ -6,6 +6,12 @@ tags consumers pin (`tag = "vX.Y.Z"`).
 
 ## [Unreleased]
 
+### Fixed
+
+- The unit tests' hung-up wake descriptor is an in-process pipe: the child
+  process that used to make it could keep another test's fake kernel alive
+  across its fork, and fail that test once in a while.
+
 ## [0.4.0] - 2026-10-08
 
 The API is settled for the daemons that pin it. Every breaking change below
@@ -30,8 +36,8 @@ comes with its before/after.
   a `match` on `Kind` needs a wildcard arm. The fields of `Identity` stay
   readable. `vendor` and `product` are `u16`, the width of a USB ID; the
   wire format is unchanged.
-- **Breaking:** `Handle::inherited*` are built on the new `listen_fds`
-  module; the behaviour is the same.
+- `Handle::inherited*` are built on the new `listen_fds` module; the
+  signatures and the behaviour are the same.
 - The live test exercises `Kind::Headset` too, and returns with a message
   instead of failing where `/dev/uhid` does not exist.
 
@@ -62,8 +68,11 @@ comes with its before/after.
   over two devices, `destroy`, and the report length derived from the HID
   descriptor. `libc` is a dev-dependency for the one test that interrupts a
   `poll()` with a signal.
-- A *Live* workflow that runs the acceptance tests against the runner's
-  kernel, as root through `sudo`, on every pull request.
+- A *Live* workflow that builds the acceptance tests on every pull request
+  and runs them as root through `sudo` where the runner's kernel can expose a
+  HID battery (`/dev/uhid` and `CONFIG_HID_BATTERY_STRENGTH=y`). The Azure
+  kernel of GitHub's hosted runners cannot, so there the job only builds them
+  and warns.
 
 ## [0.3.0] - 2026-10-08
 

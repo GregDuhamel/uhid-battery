@@ -1,5 +1,8 @@
 name: Lint
 
+# rustfmt, clippy with warnings denied, rustdoc with warnings denied (broken
+# intra-doc links included), and cargo audit over the committed Cargo.lock.
+
 on:
   push:
     branches: [main]

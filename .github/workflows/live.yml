@@ -1,14 +1,18 @@
 name: Live
 
-# The acceptance tests against the real kernel: create a virtual battery of
-# each kind through /dev/uhid and read it back from sysfs the way UPower does.
-# They need root, which the hosted Ubuntu runner grants through passwordless
-# sudo, and a kernel with uhid and HID battery support, which Ubuntu's has.
+# The acceptance tests against the real kernel (tests/live.rs): create a
+# virtual battery of each kind through /dev/uhid and read it back from sysfs
+# the way UPower does. They need root, which the hosted Ubuntu runner grants
+# through passwordless sudo, and a kernel with uhid and HID battery support
+# (CONFIG_HID_BATTERY_STRENGTH). Ubuntu's generic kernel has both; the Azure
+# kernel GitHub's hosted runners boot has uhid as an extra module and no HID
+# battery support at all.
 #
 # The test binary is built as the runner's user and run under sudo so that
 # root needs no cargo, no toolchain and no target directory of its own. The
 # tests only run where the kernel can expose a HID battery (see the kernel
-# check below); elsewhere the job builds them and warns.
+# check below); elsewhere - on GitHub's hosted runners today - the job builds
+# them, warns, and passes.
 
 on:
   push:
