@@ -6,6 +6,8 @@ tags consumers pin (`tag = "vX.Y.Z"`).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-08
+
 ### Changed
 
 - **Breaking:** `Handle::inherited` and `Handle::inherited_with_others` are now
@@ -83,7 +85,8 @@ tags consumers pin (`tag = "vX.Y.Z"`).
 - Publish a battery to UPower through a virtual HID device: `Handle`,
   `Battery`, `Identity`, `Kind`, `find_power_supply`.
 
-[Unreleased]: https://github.com/GregDuhamel/uhid-battery/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/GregDuhamel/uhid-battery/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/GregDuhamel/uhid-battery/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/GregDuhamel/uhid-battery/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/GregDuhamel/uhid-battery/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/GregDuhamel/uhid-battery/compare/v0.1.0...v0.1.1
