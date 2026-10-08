@@ -1,7 +1,6 @@
 # uhid-battery
 
 [![CI](https://github.com/GregDuhamel/uhid-battery/actions/workflows/ci.yml/badge.svg)](https://github.com/GregDuhamel/uhid-battery/actions/workflows/ci.yml)
-[![Lint](https://github.com/GregDuhamel/uhid-battery/actions/workflows/lint.yml/badge.svg)](https://github.com/GregDuhamel/uhid-battery/actions/workflows/lint.yml)
 [![Live](https://github.com/GregDuhamel/uhid-battery/actions/workflows/live.yml/badge.svg)](https://github.com/GregDuhamel/uhid-battery/actions/workflows/live.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -156,8 +155,11 @@ whole state machine through it: what `create` writes, the push after
 `UHID_START`, `GET_REPORT` answered or refused, the re-push after a charging
 flip, every way `serve_until` and `serve_all` return, `destroy`. They run under
 `cargo test` with the doctests, on both stable and the MSRV, in the *CI*
-workflow; *Lint* is rustfmt, clippy, rustdoc with warnings denied, and
-`cargo audit`.
+workflow, next to rustfmt, clippy, rustdoc with warnings denied, and
+`cargo audit`. That workflow is the shared one of
+[`rust-ci.yml`](.github/workflows/rust-ci.yml), which this author's other
+Rust repositories call as
+`GregDuhamel/uhid-battery/.github/workflows/rust-ci.yml@main`.
 
 A daemon built on this crate can test its own code the same way: the `fake`
 feature makes that stand-in public as `uhid_battery::fake`, with
