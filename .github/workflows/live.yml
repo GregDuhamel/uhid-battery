@@ -39,8 +39,16 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Load the uhid module
-        # Not fatal: without the node the tests say so and return.
-        run: sudo modprobe uhid || true
+        # The Azure kernel ships uhid in linux-modules-extra, not in the base
+        # modules package. Not fatal: without the node the tests say so and
+        # return, which the summary line below makes visible.
+        run: |
+          if ! sudo modprobe uhid 2>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" || true
+            sudo modprobe uhid || true
+          fi
+          ls -l /dev/uhid || echo "::warning::no /dev/uhid on this runner: the live tests will skip"
 
       - name: Build the live test binary
         id: build
