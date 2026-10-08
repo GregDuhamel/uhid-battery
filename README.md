@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/GregDuhamel/uhid-battery/actions/workflows/ci.yml/badge.svg)](https://github.com/GregDuhamel/uhid-battery/actions/workflows/ci.yml)
 [![Lint](https://github.com/GregDuhamel/uhid-battery/actions/workflows/lint.yml/badge.svg)](https://github.com/GregDuhamel/uhid-battery/actions/workflows/lint.yml)
+[![Live](https://github.com/GregDuhamel/uhid-battery/actions/workflows/live.yml/badge.svg)](https://github.com/GregDuhamel/uhid-battery/actions/workflows/live.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Publish a battery level to **UPower** — and so to KDE's, GNOME's or any other
@@ -25,7 +26,7 @@ It is not on crates.io; depend on it through git, pinned to a release tag:
 
 ```toml
 [dependencies]
-uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.3.0" }
+uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.4.0" }
 ```
 
 Releases are cut from the *Release* workflow (Actions → Release → Run workflow,
@@ -34,7 +35,7 @@ pick the semver bump): it runs the lints and tests, writes the version to
 
 ```rust
 use std::time::{Duration, Instant};
-use uhid_battery::{Battery, Handle, Identity, Kind};
+use uhid_battery::{Battery, Handle, Identity, Kind, Reading, Wakeup};
 
 // Passed down by systemd (`OpenFile=/dev/uhid:uhid`), or opened as root.
 // SAFETY: first thing in main, before any thread could read the environment
@@ -44,24 +45,34 @@ let handle = match unsafe { Handle::inherited("uhid") }.pop() {
     None => Handle::open(uhid_battery::DEV_UHID)?,
 };
 
-let identity = Identity {
-    name: "Audeze Maxwell".into(),       // the label the desktop shows
-    phys: "my-daemon/maxwell".into(),
-    uniq: "my-daemon-maxwell".into(),    // -> hid-my-daemon-maxwell-battery-1
-    vendor: 0x3329,
-    product: 0x4b18,
-};
-let mut battery = Battery::create(handle, &identity, Kind::Headset, 87, false)?;
+// The name is the label the desktop shows; the unique ID names the power
+// supply (-> hid-my-daemon-maxwell-battery-1).
+let identity = Identity::new("Audeze Maxwell", "my-daemon-maxwell")
+    .phys("my-daemon/maxwell")
+    .vendor(0x3329)
+    .product(0x4b18);
+let mut battery = Battery::create(handle, &identity, Kind::Headset, Reading::new(87, false))?;
 battery.wait_for_power_supply(Duration::from_secs(2))?;
 
 loop {
-    battery.serve_until(Instant::now() + Duration::from_secs(60), None)?;
-    battery.update(read_the_level_somehow(), false)?;
+    match battery.serve_until(Instant::now() + Duration::from_secs(60), None)? {
+        Wakeup::Deadline => battery.update(read_the_level_somehow())?,
+        Wakeup::Interrupted | Wakeup::Wake => break, // look at the flag the handler raised
+    }
 }
 ```
 
-`Battery` also implements `AsFd` and exposes `service()` and `next_deadline()`,
-for daemons that run their own `poll()` loop over several devices.
+A daemon with several devices hands them all to `uhid_battery::serve_all`,
+which waits on every one of them (and on an optional wake descriptor) until a
+deadline. When one of them fails the `ServeError` says which (`index()`), so
+the daemon can drop that one and carry on with the rest; `From<ServeError>
+for io::Error` is there for a daemon that does not care. Underneath are `Battery::service()`, `Battery::next_deadline()`,
+`AsFd` and `uhid_battery::poll::poll`, for a daemon that runs its own loop.
+
+`Battery::create` tells a failure apart from a mistake:
+`CreateError::kind()` is `InvalidIdentity` when the identity can never be
+accepted, and `Io` when the kernel said no this time; both give the `Handle`
+back through `into_parts()`.
 
 ## What it knows so you do not have to
 
@@ -123,9 +134,11 @@ DeviceAllow=/dev/uhid rw
 `Handle::inherited("uhid")` then returns the handle, and the node stays
 `root:root 0600`. It closes whatever else the service manager passed; a daemon
 that is also socket-activated calls `Handle::inherited_with_others("uhid")` and
-gets those descriptors back with their names.
+gets those descriptors back with their names. Both are filters over
+`uhid_battery::listen_fds::take()`, the `sd_listen_fds(3)` protocol on its
+own, for a daemon with other ideas about what it was passed.
 
-Both are `unsafe fn`: they remove the `LISTEN_*` variables from the
+All three are `unsafe fn`: they remove the `LISTEN_*` variables from the
 environment, which is a data race against any thread that reads it (Rust's
 `std::env`, or `getenv(3)` in a C library). Call them at the top of `main`,
 before spawning anything.
@@ -136,8 +149,14 @@ before spawning anything.
 cargo test          # no hardware, no privileges
 ```
 
+The unit tests stand a socket pair in for `/dev/uhid` and drive the whole
+state machine through it: what `create` writes, the push after `UHID_START`,
+`GET_REPORT` answered or refused, the re-push after a charging flip, every
+way `serve_until` returns.
+
 The acceptance tests talk to the real kernel — they create a battery of each
-kind and read it back from sysfs — and need root:
+kind and read it back from sysfs — and need root; the *Live* workflow runs
+them on every pull request, under `sudo`, on the runner's kernel:
 
 ```sh
 cargo test --test live --no-run

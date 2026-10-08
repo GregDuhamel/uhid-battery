@@ -8,16 +8,22 @@
 //! cargo test --test live --no-run
 //! sudo target/debug/deps/live-* --ignored --nocapture --test-threads=1
 //! ```
+//!
+//! On a machine without `/dev/uhid` at all (no `uhid` module) each test says
+//! so and returns, rather than failing: CI runs this on whatever kernel the
+//! runner has.
 
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
-use uhid_battery::{Battery, DEV_UHID, Handle, Identity, Kind, find_power_supply};
+use uhid_battery::{Battery, DEV_UHID, Handle, Identity, Kind, Reading, find_power_supply};
 
 /// Polls until `check` returns a value, or gives up after `timeout`.
 fn wait_for<T>(timeout: Duration, mut check: impl FnMut() -> Option<T>) -> Option<T> {
@@ -69,40 +75,49 @@ fn upower_kind(uniq: &str) -> Option<String> {
         .map(|line| line.trim().to_owned())
 }
 
+/// `/dev/uhid`, or `None` - with a word - where there is no such node.
+fn open_uhid() -> Option<Handle> {
+    match Handle::open(DEV_UHID) {
+        Ok(handle) => Some(handle),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            eprintln!("skipped: {DEV_UHID} does not exist (is the uhid module loaded?)");
+            None
+        }
+        Err(err) => {
+            panic!("opening {DEV_UHID}: {err} - run this test as root (see the file header)")
+        }
+    }
+}
+
 /// Runs the whole life of one battery. The device is served from its own
 /// thread, because whoever reads sysfs must not be the one who answers the
 /// kernel - in production they are different processes.
 fn exercise(kind: Kind, label: &str) {
-    let handle = Handle::open(DEV_UHID)
-        .expect("opening /dev/uhid: run this test as root (see the file header)");
+    let Some(handle) = open_uhid() else {
+        return;
+    };
 
     let uniq = format!("uhid-battery-test-{label}-{}", std::process::id());
-    let identity = Identity {
-        name: format!("Test {label}"),
-        phys: format!("uhid-battery-test/{label}"),
-        uniq: uniq.clone(),
-        vendor: 0x1234,
-        product: 0x5678,
-    };
-    let battery = Battery::create(handle, &identity, kind, 42, true).expect("creating the device");
+    let identity = Identity::new(format!("Test {label}"), uniq.clone())
+        .phys(format!("uhid-battery-test/{label}"))
+        .vendor(0x1234)
+        .product(0x5678);
+    let battery = Battery::create(handle, &identity, kind, Reading::new(42, true))
+        .expect("creating the device");
 
     let stop = Arc::new(AtomicBool::new(false));
-    let level = Arc::new(AtomicU8::new(42));
-    let charging = Arc::new(AtomicBool::new(true));
+    let wanted = Arc::new(Mutex::new(Reading::new(42, true)));
     let server = {
-        let (stop, level, charging) = (stop.clone(), level.clone(), charging.clone());
+        let (stop, wanted) = (stop.clone(), wanted.clone());
         thread::spawn(move || {
             let mut battery = battery;
             while !stop.load(Ordering::Relaxed) {
                 battery
                     .serve_until(Instant::now() + Duration::from_millis(100), None)
                     .expect("serving the device");
-                let (want, plugged) = (
-                    level.load(Ordering::Relaxed),
-                    charging.load(Ordering::Relaxed),
-                );
-                if want != battery.percent() || plugged != battery.charging() {
-                    battery.update(want, plugged).expect("updating the level");
+                let want = *wanted.lock().unwrap();
+                if want != battery.reading() {
+                    battery.update(want).expect("updating the level");
                 }
             }
             battery
@@ -131,8 +146,7 @@ fn exercise(kind: Kind, label: &str) {
         None => eprintln!("{label}: UPower did not list the device (is it running?)"),
     }
 
-    level.store(17, Ordering::Relaxed);
-    charging.store(false, Ordering::Relaxed);
+    *wanted.lock().unwrap() = Reading::new(17, false);
     expect_attr(&base, "capacity", "17");
     expect_attr(&base, "status", "Discharging");
 
@@ -148,7 +162,8 @@ fn exercise(kind: Kind, label: &str) {
 
     // The handle is good for another device: that is the point of getting it
     // back, since an inherited one could not be reopened.
-    let again = Battery::create(handle, &identity, kind, 50, false).expect("reusing the handle");
+    let again = Battery::create(handle, &identity, kind, Reading::new(50, false))
+        .expect("reusing the handle");
     drop(again);
 }
 
@@ -162,4 +177,12 @@ fn a_generic_battery_reaches_sysfs() {
 #[ignore = "needs write access to /dev/uhid; run as root"]
 fn a_mouse_battery_reaches_sysfs() {
     exercise(Kind::Mouse, "mouse");
+}
+
+#[test]
+#[ignore = "needs write access to /dev/uhid; run as root"]
+fn a_headset_battery_reaches_sysfs() {
+    // On the wire a headset is a generic battery; the difference is the udev
+    // rule, which is not installed here, so UPower reports a plain battery.
+    exercise(Kind::Headset, "headset");
 }
