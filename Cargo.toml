@@ -28,3 +28,6 @@ module_name_repetitions = "allow"
 # Only to interrupt a poll() with a thread-directed signal in the unit tests
 # of `serve_until`; the crate itself handles signals without it.
 libc = "0.2"
+# The same rustix, with pipe(2) for the hung-up wake descriptor in the unit
+# tests of `serve_until` and `serve_all`.
+rustix = { version = "1.1.5", features = ["pipe"] }

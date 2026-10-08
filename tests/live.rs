@@ -10,8 +10,10 @@
 //! ```
 //!
 //! On a machine without `/dev/uhid` at all (no `uhid` module) each test says
-//! so and returns, rather than failing: CI runs this on whatever kernel the
-//! runner has.
+//! so and returns, rather than failing. The *Live* workflow builds this binary
+//! on every pull request and only runs it where the kernel also has
+//! `CONFIG_HID_BATTERY_STRENGTH=y`; GitHub's hosted runners do not, so there
+//! it is built and nothing more.
 
 use std::fs;
 use std::io;

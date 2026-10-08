@@ -1,5 +1,9 @@
 name: CI
 
+# Build and run the unit tests (over a fake /dev/uhid: no hardware, no
+# privileges) and the doctests, on stable and on the MSRV. The acceptance
+# tests against the real kernel are the Live workflow's.
+
 on:
   push:
     branches: [main]

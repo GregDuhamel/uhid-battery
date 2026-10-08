@@ -1,7 +1,8 @@
 name: Release
 
 # Same flow as razerd: pick a semver bump, and the workflow computes the next
-# version from the latest tag, writes it to Cargo.toml, tags and publishes a
+# version from the latest tag, writes it to Cargo.toml (and so to Cargo.lock)
+# and to the tag the README tells consumers to pin, tags and publishes a
 # GitHub release. There is no binary to attach - this is a library, consumed as
 # a git dependency (`tag = "vX.Y.Z"`) - so the tests are what gates the tag.
 #

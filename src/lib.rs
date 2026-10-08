@@ -39,6 +39,11 @@
 //! # Ok(()) }
 //! ```
 //!
+//! A daemon with several devices hands them all to [`serve_all`]; one that
+//! runs its own loop has [`Battery::service`], [`Battery::next_deadline`],
+//! `AsFd` and [`poll::poll`]. [`Handle::inherited`] is the unprivileged path
+//! (`OpenFile=` in a systemd unit), built on [`listen_fds`].
+//!
 //! The crate exists because the kernel and UPower each have rules that are only
 //! discovered by breaking them; see [`Kind`] for the descriptor ones and
 //! [`Battery`] for the timing ones.
