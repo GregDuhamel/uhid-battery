@@ -26,7 +26,7 @@ It is not on crates.io; depend on it through git, pinned to a release tag:
 
 ```toml
 [dependencies]
-uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.4.0" }
+uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.4.1" }
 ```
 
 Releases are cut from the *Release* workflow (Actions → Release → Run workflow,
@@ -167,7 +167,7 @@ covered by the API's stability promise:
 
 ```toml
 [dev-dependencies]
-uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.4.0", features = ["fake"] }
+uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.4.1", features = ["fake"] }
 ```
 
 The acceptance tests talk to the real kernel — they create a battery of each
