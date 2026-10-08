@@ -79,14 +79,16 @@ jobs:
       - name: cargo test --doc
         run: cargo test --doc
 
+      # Cargo.lock is committed and records this crate's own version, which
+      # the build steps above have just rewritten: it goes in the commit too.
       - name: Commit version bump and tag
         id: bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet Cargo.toml README.md; then
+          if ! git diff --quiet Cargo.toml Cargo.lock README.md; then
             git switch -c "release/v${{ steps.version.outputs.version }}"
-            git add Cargo.toml README.md
+            git add Cargo.toml Cargo.lock README.md
             git commit -m "chore: release v${{ steps.version.outputs.version }}"
             git push origin "release/v${{ steps.version.outputs.version }}"
             echo "branch=release/v${{ steps.version.outputs.version }}" >> "$GITHUB_OUTPUT"

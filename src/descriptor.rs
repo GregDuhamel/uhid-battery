@@ -162,6 +162,12 @@ static GENERIC: Assembled = concat_bytes(&[
 ]);
 
 /// Longest descriptor this module builds.
+///
+/// Kept just above the longest one on purpose: [`concat_bytes`] writes into an
+/// array of this size from a `const fn` evaluated at compile time, so a new or
+/// grown descriptor that no longer fits indexes past the array and fails the
+/// build ("evaluation of constant value failed") instead of being cut short at
+/// runtime. When that happens the fix is to raise this constant.
 const MAX_LEN: usize = 96;
 
 /// A descriptor assembled at compile time, with its length.

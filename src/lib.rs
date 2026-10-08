@@ -15,7 +15,9 @@
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Passed down by systemd (`OpenFile=/dev/uhid:uhid`), or opened as root.
-//! let handle = match Handle::inherited("uhid").pop() {
+//! // SAFETY: first thing in main, before any thread could read the
+//! // environment that `inherited` edits.
+//! let handle = match unsafe { Handle::inherited("uhid") }.pop() {
 //!     Some(handle) => handle,
 //!     None => Handle::open(uhid_battery::DEV_UHID)?,
 //! };

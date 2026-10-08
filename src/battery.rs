@@ -4,7 +4,6 @@ use std::fmt;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::PathBuf;
-use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec};
@@ -42,8 +41,9 @@ pub struct Identity {
     /// [`Kind::udev_rule`] relies on; `<daemon>/<device>` is a good shape.
     pub phys: String,
     /// Unique ID. The kernel names the power supply `hid-<uniq>-battery[-<n>]`,
-    /// so it has to be unique on the machine and filesystem-safe: not empty,
-    /// and without a `/`. Never put a string that came from the device in here.
+    /// so it has to be unique on the machine and safe as a file name and in a
+    /// udev or shell match: 1 to 63 characters from `[A-Za-z0-9._-]`. Never
+    /// put a string that came from the device in here.
     pub uniq: String,
     /// Vendor ID, usually mirrored from the real device.
     pub vendor: u32,
@@ -57,16 +57,26 @@ impl Identity {
     /// Each one lands in a fixed-size, NUL-terminated field. A string that did
     /// not fit would be cut short without a word, and for `uniq` that means a
     /// power supply under a name [`Battery::power_supply`] never looks for.
+    /// `uniq` is held to `[A-Za-z0-9._-]` besides: it becomes a directory name
+    /// under `/sys/class/power_supply`, and whitespace, a newline or a glob
+    /// character in there would make a mess of every udev rule or shell
+    /// snippet that matches on it.
     fn validate(&self) -> io::Result<()> {
         let fits = |value: &str, field: usize| value.len() < field && !value.contains('\0');
-        if !fits(&self.name, event::LEN_NAME) {
-            return Err(invalid("the name must be under 128 bytes, without NUL"));
+        if self.name.is_empty() || !fits(&self.name, event::LEN_NAME) {
+            return Err(invalid("the name must be 1 to 127 bytes, without NUL"));
         }
         if !fits(&self.phys, event::LEN_PHYS) {
             return Err(invalid("phys must be under 64 bytes, without NUL"));
         }
-        if self.uniq.is_empty() || self.uniq.contains('/') || !fits(&self.uniq, event::LEN_UNIQ) {
-            return Err(invalid("uniq must be 1 to 63 bytes, without NUL or '/'"));
+        let plain = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-');
+        if self.uniq.is_empty()
+            || !fits(&self.uniq, event::LEN_UNIQ)
+            || !self.uniq.bytes().all(plain)
+        {
+            return Err(invalid(
+                "uniq must be 1 to 63 characters from [A-Za-z0-9._-]",
+            ));
         }
         Ok(())
     }
@@ -237,11 +247,16 @@ impl Battery {
     /// `wake`, if given, is watched too: the call returns `true` as soon as it
     /// is readable (it is never read here), and `false` at the deadline - or
     /// earlier if a signal interrupts the wait, so the caller gets to look at
-    /// whatever flag its handler raised.
+    /// whatever flag its handler raised. The battery is serviced once more
+    /// before any of those returns, so the kernel is never left waiting on an
+    /// answer while the caller does its own thing.
     ///
     /// # Errors
     ///
-    /// Fails if servicing the battery or waiting on it fails.
+    /// Fails if servicing the battery or waiting on it fails, or if `wake` is
+    /// hung up, in error or not an open descriptor: such a descriptor is
+    /// reported by every `poll()` and never becomes readable, so returning
+    /// `true` for it would have the caller spin.
     pub fn serve_until(
         &mut self,
         deadline: Instant,
@@ -254,20 +269,17 @@ impl Battery {
             let until = self.repush_at.map_or(deadline, |due| due.min(deadline));
             let timeout = until.saturating_duration_since(now);
 
-            let mut fds = Vec::with_capacity(2);
-            fds.push(PollFd::new(&self.handle, PollFlags::IN));
-            if let Some(wake) = wake.as_ref() {
-                fds.push(PollFd::new(wake, PollFlags::IN));
+            match self.wait(wake, timeout)? {
+                Wakeup::Device => {}
+                Wakeup::Wake => {
+                    self.service()?;
+                    return Ok(true);
+                }
+                Wakeup::Signal => {
+                    self.service()?;
+                    return Ok(false);
+                }
             }
-            match poll(&mut fds, timeout) {
-                Ok(_) => {}
-                Err(err) if err.kind() == io::ErrorKind::Interrupted => return Ok(false),
-                Err(err) => return Err(err),
-            }
-            if fds.get(1).is_some_and(|fd| !fd.revents().is_empty()) {
-                return Ok(true);
-            }
-            drop(fds);
 
             if Instant::now() >= deadline {
                 self.service()?;
@@ -276,12 +288,52 @@ impl Battery {
         }
     }
 
+    /// One `poll()` over the device and, if given, `wake`, for at most
+    /// `timeout`.
+    fn wait(&self, wake: Option<BorrowedFd<'_>>, timeout: Duration) -> io::Result<Wakeup> {
+        let handle = self.handle.as_fd();
+        // A fixed pair rather than a Vec: this runs on every turn of the loop.
+        // Without a wake descriptor the second slot holds the device again,
+        // and the slice handed to poll() leaves it out.
+        let mut fds = [
+            PollFd::from_borrowed_fd(handle, PollFlags::IN),
+            PollFd::from_borrowed_fd(wake.unwrap_or(handle), PollFlags::IN),
+        ];
+        let watched = if wake.is_some() { 2 } else { 1 };
+        match poll(&mut fds[..watched], timeout) {
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => return Ok(Wakeup::Signal),
+            Err(err) => return Err(err),
+        }
+        if wake.is_none() {
+            return Ok(Wakeup::Device);
+        }
+
+        let revents = fds[1].revents();
+        if revents.contains(PollFlags::IN) {
+            return Ok(Wakeup::Wake);
+        }
+        // poll() reports these whether or not they were asked for, and keeps
+        // reporting them: a pipe whose writer is gone, or a descriptor that
+        // was closed, would otherwise look like a wake-up on every call.
+        if revents.intersects(PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL) {
+            return Err(io::Error::other(
+                "the wake descriptor is hung up, in error or not open",
+            ));
+        }
+        Ok(Wakeup::Device)
+    }
+
     /// Services the battery until the kernel has registered its power supply,
     /// and returns where. `None` means it did not happen within `timeout`.
     ///
     /// Worth checking: the kernel accepts a device it then builds no battery
     /// for without a word (`CONFIG_HID_BATTERY_STRENGTH` missing, say), and the
     /// only evidence is the absence of the sysfs entry.
+    ///
+    /// The battery is serviced the whole time - this is the moment the kernel
+    /// sends `UHID_START` and asks for the first report, and a `GET_REPORT`
+    /// left unanswered holds the probe up for seconds.
     ///
     /// # Errors
     ///
@@ -294,10 +346,14 @@ impl Battery {
             if let Some(path) = self.power_supply() {
                 return Ok(Some(path));
             }
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            let now = Instant::now();
+            if deadline.is_some_and(|deadline| now >= deadline) {
                 return Ok(None);
             }
-            sleep(REGISTRATION_POLL);
+            // Serve rather than sleep between two looks at sysfs. A signal
+            // cuts the wait short; the loop simply looks again.
+            let next = now + REGISTRATION_POLL;
+            self.serve_until(deadline.map_or(next, |deadline| deadline.min(next)), None)?;
         }
     }
 
@@ -351,6 +407,17 @@ impl AsFd for Battery {
     }
 }
 
+/// Why a wait in [`Battery::serve_until`] ended, short of an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wakeup {
+    /// The device has something to say, or the timeout ran out.
+    Device,
+    /// The wake descriptor is readable.
+    Wake,
+    /// A signal interrupted the wait.
+    Signal,
+}
+
 fn poll(fds: &mut [PollFd<'_>], timeout: Duration) -> io::Result<usize> {
     let timeout = Timespec {
         tv_sec: timeout.as_secs().try_into().unwrap_or(i64::MAX),
@@ -385,14 +452,27 @@ mod tests {
                 .validate()
                 .is_ok()
         );
-        assert!(identity("", "", "u").validate().is_ok());
+        assert!(identity("n", "", "u").validate().is_ok());
+        // What the daemons in the field use, and what the live tests use.
+        for uniq in [
+            "razerd",
+            "headset-3329-4b18",
+            "uhid-battery-test-generic-4242",
+            "a.b_c",
+        ] {
+            assert!(identity("n", "p", uniq).validate().is_ok(), "{uniq}");
+        }
 
         assert!(identity(&"n".repeat(128), "p", "u").validate().is_err());
+        assert!(identity("", "p", "u").validate().is_err());
         assert!(identity("n", &"p".repeat(64), "u").validate().is_err());
         assert!(identity("n", "p", &"u".repeat(64)).validate().is_err());
         assert!(identity("n", "p", "").validate().is_err());
-        assert!(identity("n", "p", "a/b").validate().is_err());
         assert!(identity("n", "p", "a\0b").validate().is_err());
         assert!(identity("n\0", "p", "u").validate().is_err());
+        // Anything a file name, a udev match or a shell would trip on.
+        for uniq in ["a/b", "a b", "a\nb", "a*", "a?", "a[b]", "a:b", "ä", "a\tb"] {
+            assert!(identity("n", "p", uniq).validate().is_err(), "{uniq:?}");
+        }
     }
 }
