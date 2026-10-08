@@ -1,0 +1,180 @@
+name: Rust CI
+
+# The CI every Rust repository of this author shares: rustfmt, clippy with
+# warnings denied, build and tests (unit, integration, doc) on stable and on
+# the crate's MSRV, rustdoc with warnings denied (broken intra-doc links
+# included), and cargo audit over the committed Cargo.lock. Everything runs
+# `--locked`: the lockfile is committed, and CI must build exactly what it
+# records.
+#
+# It is a reusable workflow (`on: workflow_call`): it never runs on its own.
+# A repository calls it from a thin ci.yml of its own, which owns the
+# triggers and passes what differs from one crate to the next:
+#
+#   name: CI
+#   on:
+#     push:
+#       branches: [main]
+#     pull_request:
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#   jobs:
+#     rust:
+#       uses: GregDuhamel/uhid-battery/.github/workflows/rust-ci.yml@main
+#       with:
+#         msrv: "1.85"
+#         all-features: true
+#
+# (uhid-battery itself calls it by path, `./.github/workflows/rust-ci.yml`,
+# which runs the file of the commit under test rather than main's.)
+#
+# Inputs, all optional:
+#
+#   msrv               The MSRV declared in Cargo.toml (`rust-version`), as a
+#                      string: "1.85". The test job then also runs on that
+#                      toolchain. Empty (the default): stable only.
+#   all-features       Pass `--all-features` to clippy and rustdoc, so that
+#                      feature-gated code is linted and documented too. The
+#                      tests take their flags from `test-args` instead.
+#   doc-private-items  Pass `--document-private-items` to rustdoc, for
+#                      binaries whose only documentation is internal.
+#   audit              Run `cargo audit` (default: true).
+#   test-args          Extra arguments for both `cargo test` invocations
+#                      (`--all-targets` and `--doc`): "--all-features",
+#                      "-- --test-threads=1", ...
+#
+# The token only needs to read the repository: no job here writes anything.
+# That is also why the audit is the cargo-audit binary and not
+# rustsec/audit-check: the action reports through the Checks API, which needs
+# `checks: write`, and a called workflow cannot hold more than its caller
+# grants - every caller would have had to grant it to every job here. The
+# permissions below are the ceiling a caller can rely on; a caller that grants
+# less wins.
+#
+# Actions are pinned to a commit; dependabot (github-actions ecosystem) moves
+# the pins in this repository, and the callers follow `@main`.
+
+on:
+  workflow_call:
+    inputs:
+      msrv:
+        description: "MSRV to test on besides stable (e.g. \"1.85\"); empty = stable only"
+        type: string
+        required: false
+        default: ""
+      all-features:
+        description: "Pass --all-features to clippy and rustdoc"
+        type: boolean
+        required: false
+        default: false
+      doc-private-items:
+        description: "Pass --document-private-items to rustdoc"
+        type: boolean
+        required: false
+        default: false
+      audit:
+        description: "Run cargo audit over Cargo.lock"
+        type: boolean
+        required: false
+        default: true
+      test-args:
+        description: "Extra arguments for cargo test (both --all-targets and --doc)"
+        type: string
+        required: false
+        default: ""
+
+# One run per ref: a new push to the same branch or pull request cancels the
+# previous one. The caller usually has its own group as well; this one is
+# named apart from it so the two can never cancel each other.
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts are useless on a fresh runner and bloat the cache.
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  rustfmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo clippy --locked --all-targets ${{ inputs.all-features && '--all-features' || '' }} -- -D warnings
+
+  test:
+    name: Test (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # stable, plus the MSRV when the caller declares one.
+        rust: ${{ fromJSON(inputs.msrv != '' && format('["stable", "{0}"]', inputs.msrv) || '["stable"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.rust }}
+
+      - name: Build
+        run: cargo build --locked --all-targets
+
+      - name: Test
+        run: cargo test --locked --all-targets ${{ inputs.test-args }}
+
+      - name: Doc tests
+        run: cargo test --locked --doc ${{ inputs.test-args }}
+
+  rustdoc:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo doc --locked --no-deps ${{ inputs.all-features && '--all-features' || '' }} ${{ inputs.doc-private-items && '--document-private-items' || '' }}
+
+  audit:
+    name: cargo audit
+    if: ${{ inputs.audit }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A prebuilt, checksummed cargo-audit: no compile, no toolchain.
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-audit
+      # cargo-audit reads the committed Cargo.lock.
+      - run: cargo audit
