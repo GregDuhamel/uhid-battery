@@ -65,14 +65,19 @@ impl Handle {
         Ok(Self { fd })
     }
 
-    /// Adopts `fd` without checking that it is `/dev/uhid`, so the unit tests
-    /// can stand a socket in for the kernel.
+    /// Adopts `fd` without checking that it is `/dev/uhid`, so that a unit
+    /// test can stand a socket in for the kernel (see [`crate::fake`]).
+    ///
+    /// **Tests only.** Writing uhid events into a descriptor that is not
+    /// `/dev/uhid` is exactly what [`Handle::from_fd`] exists to prevent.
+    /// This is behind the `fake` feature so that no daemon reaches it by
+    /// accident: enable the feature from the dev-dependencies alone.
     ///
     /// # Errors
     ///
     /// Fails if the descriptor cannot be made non-blocking.
-    #[cfg(test)]
-    pub(crate) fn from_fd_unchecked(fd: OwnedFd) -> io::Result<Self> {
+    #[cfg(any(test, feature = "fake"))]
+    pub fn from_fd_unchecked(fd: OwnedFd) -> io::Result<Self> {
         Self::adopt(fd)
     }
 

@@ -159,6 +159,17 @@ flip, every way `serve_until` and `serve_all` return, `destroy`. They run under
 workflow; *Lint* is rustfmt, clippy, rustdoc with warnings denied, and
 `cargo audit`.
 
+A daemon built on this crate can test its own code the same way: the `fake`
+feature makes that stand-in public as `uhid_battery::fake`, with
+`Handle::from_fd_unchecked` to adopt the daemon's end of the pair. Enable it
+from the dev-dependencies alone - it is for tests, and nothing behind it is
+covered by the API's stability promise:
+
+```toml
+[dev-dependencies]
+uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.4.0", features = ["fake"] }
+```
+
 The acceptance tests talk to the real kernel — they create a battery of each
 kind and read it back from sysfs — and need root:
 

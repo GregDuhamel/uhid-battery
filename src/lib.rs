@@ -47,12 +47,21 @@
 //! The crate exists because the kernel and UPower each have rules that are only
 //! discovered by breaking them; see [`Kind`] for the descriptor ones and
 //! [`Battery`] for the timing ones.
+//!
+//! # The `fake` feature
+//!
+//! The unit tests stand a datagram socket pair in for `/dev/uhid`, and a
+//! daemon can do the same in its own tests: the `fake` feature makes that
+//! stand-in public as the `uhid_battery::fake` module, along with
+//! `Handle::from_fd_unchecked`. Tests only - enable it from the
+//! dev-dependencies, never from the dependencies - and outside the API's
+//! stability promise.
 
 mod battery;
 mod descriptor;
 mod event;
-#[cfg(test)]
-mod fake;
+#[cfg(any(test, feature = "fake"))]
+pub mod fake;
 mod handle;
 mod identity;
 pub mod listen_fds;

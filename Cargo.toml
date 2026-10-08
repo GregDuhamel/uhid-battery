@@ -16,6 +16,15 @@ publish = false
 [dependencies]
 rustix = { version = "1.1.5", features = ["event", "fs", "std"] }
 
+[features]
+# Makes the unit tests' fake kernel (`uhid_battery::fake`: a datagram socket
+# pair standing in for /dev/uhid) and `Handle::from_fd_unchecked` public, so
+# that a daemon built on this crate can drive a real `Battery` in its own unit
+# tests without /dev/uhid or root. Tests only: a daemon enables it from its
+# dev-dependencies alone, and nothing behind it is covered by the API's
+# stability promise.
+fake = []
+
 [lints.rust]
 missing_docs = "warn"
 unsafe_code = "deny"
