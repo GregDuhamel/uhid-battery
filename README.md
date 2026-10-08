@@ -25,7 +25,7 @@ It is not on crates.io; depend on it through git, pinned to a release tag:
 
 ```toml
 [dependencies]
-uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.2.0" }
+uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.3.0" }
 ```
 
 Releases are cut from the *Release* workflow (Actions → Release → Run workflow,
@@ -37,7 +37,9 @@ use std::time::{Duration, Instant};
 use uhid_battery::{Battery, Handle, Identity, Kind};
 
 // Passed down by systemd (`OpenFile=/dev/uhid:uhid`), or opened as root.
-let handle = match Handle::inherited("uhid").pop() {
+// SAFETY: first thing in main, before any thread could read the environment
+// that `inherited` edits.
+let handle = match unsafe { Handle::inherited("uhid") }.pop() {
     Some(handle) => handle,
     None => Handle::open(uhid_battery::DEV_UHID)?,
 };
@@ -96,7 +98,9 @@ Every item below cost an afternoon. None of them produces an error message.
   `Battery::destroy()`.
 * **The kernel truncates the identity strings without a word.** A `uniq` cut
   short names a power supply nobody looks for, so `Battery::create` refuses an
-  `Identity` that does not fit, and a `uniq` that is empty or holds a `/`.
+  `Identity` that does not fit, an empty `name`, and a `uniq` outside
+  `[A-Za-z0-9._-]` - it becomes a directory name that udev rules and shell
+  snippets match on.
 * **An inherited descriptor could be anything.** `Handle::from_fd` checks that
   it really is the uhid character device (10:239) before events are written
   into it.
@@ -120,6 +124,11 @@ DeviceAllow=/dev/uhid rw
 `root:root 0600`. It closes whatever else the service manager passed; a daemon
 that is also socket-activated calls `Handle::inherited_with_others("uhid")` and
 gets those descriptors back with their names.
+
+Both are `unsafe fn`: they remove the `LISTEN_*` variables from the
+environment, which is a data race against any thread that reads it (Rust's
+`std::env`, or `getenv(3)` in a C library). Call them at the top of `main`,
+before spawning anything.
 
 ## Testing
 

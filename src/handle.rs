@@ -58,7 +58,11 @@ impl Handle {
                 "the descriptor is not the uhid character device",
             ));
         }
+        Self::adopt(fd)
+    }
 
+    /// Wraps a descriptor already known to be `/dev/uhid`.
+    fn adopt(fd: OwnedFd) -> io::Result<Self> {
         let flags = fcntl_getfl(&fd)?;
         fcntl_setfl(&fd, flags | OFlags::NONBLOCK)?;
         Ok(Self { fd })
@@ -77,13 +81,25 @@ impl Handle {
     /// Every other descriptor the service manager passed is closed - one under
     /// another name, or one that turns out not to be `/dev/uhid`. A daemon that
     /// is also handed a socket wants [`Handle::inherited_with_others`] instead.
-    /// The `LISTEN_*` variables are removed so neither a second call nor a
-    /// child process claims the same descriptors.
+    /// Whenever the `LISTEN_*` variables are addressed to this process they
+    /// are removed, even when they announce no descriptor, so neither a second
+    /// call nor a child process claims the same descriptors. Variables meant
+    /// for a parent are left alone.
     ///
-    /// Call this early, before spawning threads: it edits the environment.
+    /// # Safety
+    ///
+    /// The variables are removed with [`std::env::remove_var`], which is a
+    /// data race against any other thread that reads or writes the
+    /// environment - through `std::env`, through `getenv(3)` in a C library,
+    /// or by a crate doing either. The caller guarantees that no such thread
+    /// exists while this runs, which in practice means calling it at the top
+    /// of `main`, before anything is spawned.
+    #[allow(unsafe_code)] // Honest about `remove_var`; see the Safety section.
     #[must_use]
-    pub fn inherited(prefix: &str) -> Vec<Self> {
-        Self::inherited_with_others(prefix).0
+    pub unsafe fn inherited(prefix: &str) -> Vec<Self> {
+        // SAFETY: the caller upholds the contract of `inherited_with_others`,
+        // which is the same as ours.
+        unsafe { Self::inherited_with_others(prefix) }.0
     }
 
     /// As [`Handle::inherited`], but hands back the descriptors it did not
@@ -91,8 +107,14 @@ impl Handle {
     ///
     /// The variables are removed all the same, so this is the only chance to
     /// get at those descriptors.
+    ///
+    /// # Safety
+    ///
+    /// As for [`Handle::inherited`]: no other thread may read or write the
+    /// environment while this runs.
+    #[allow(unsafe_code)] // Honest about `remove_var`; see the Safety section.
     #[must_use]
-    pub fn inherited_with_others(prefix: &str) -> (Vec<Self>, Vec<(String, OwnedFd)>) {
+    pub unsafe fn inherited_with_others(prefix: &str) -> (Vec<Self>, Vec<(String, OwnedFd)>) {
         let Some(count) = listen_fds_count() else {
             return (Vec::new(), Vec::new());
         };
@@ -107,19 +129,20 @@ impl Handle {
             // `LISTEN_FDS_START..LISTEN_FDS_START + count` belong to this
             // process, this is the only place that adopts them, and the
             // variables are cleared below so nothing adopts them again.
-            #[allow(unsafe_code)]
             let fd = unsafe { OwnedFd::from_raw_fd(LISTEN_FDS_START + offset) };
             // Passed descriptors come without FD_CLOEXEC. A failure means the
             // environment lied and the number is not an open descriptor: let
-            // go of it without closing what is not ours.
+            // go of it without closing what is not ours, and stop there, as
+            // sd_listen_fds(3) does - the numbers after it are no more
+            // trustworthy, and the names no longer line up with anything.
             if fcntl_setfd(&fd, FdFlags::CLOEXEC).is_err() {
                 let _ = fd.into_raw_fd();
-                continue;
+                break;
             }
 
             if name.starts_with(prefix) && is_uhid(&fd).unwrap_or(false) {
                 // Only fcntl() can still fail, and it took the descriptor.
-                if let Ok(handle) = Self::from_fd(fd) {
+                if let Ok(handle) = Self::adopt(fd) {
                     handles.push(handle);
                 }
             } else {
@@ -127,13 +150,22 @@ impl Handle {
             }
         }
 
-        unset_listen_vars();
+        // SAFETY: the caller guarantees no thread touches the environment.
+        unsafe { unset_listen_vars() };
         (handles, others)
     }
 
     pub(crate) fn write(&self, event: &Buffer) -> io::Result<()> {
-        // One event per write(); uhid never accepts a partial one.
-        let written = rustix::io::write(&self.fd, event)?;
+        // One event per write(); uhid never accepts a partial one. The write
+        // is not blocking, but uhid_char_write() takes the device lock with
+        // mutex_lock_interruptible(), so a signal can still make it fail with
+        // EINTR before a byte was taken: try again.
+        let written = loop {
+            match rustix::io::write(&self.fd, event) {
+                Err(Errno::INTR) => {}
+                result => break result?,
+            }
+        };
         if written == EVENT_SIZE {
             Ok(())
         } else {
@@ -176,23 +208,37 @@ fn is_uhid(fd: &OwnedFd) -> io::Result<bool> {
     )
 }
 
+/// How many descriptors `LISTEN_FDS` announces, when the `LISTEN_*` variables
+/// are addressed to this process. `None` when they are absent or meant for a
+/// parent - and then they are not ours to remove either.
 fn listen_fds_count() -> Option<RawFd> {
     let pid: u32 = env::var("LISTEN_PID").ok()?.parse().ok()?;
     if pid != std::process::id() {
         // Meant for a parent of ours; not ours to touch.
         return None;
     }
-    let count: RawFd = env::var("LISTEN_FDS").ok()?.parse().ok()?;
-    // The bounds sd_listen_fds(3) applies: the last descriptor number has to
-    // be one a descriptor can have.
-    (count > 0 && count <= RawFd::MAX - LISTEN_FDS_START).then_some(count)
+    // Ours. A missing or unparsable count, or one past the bounds
+    // sd_listen_fds(3) applies (the last descriptor number has to be one a
+    // descriptor can have), announces nothing - but the variables still get
+    // removed, as they would for a plain `LISTEN_FDS=0`.
+    let count = env::var("LISTEN_FDS")
+        .ok()
+        .and_then(|count| count.parse::<RawFd>().ok())
+        .filter(|&count| count > 0 && count <= RawFd::MAX - LISTEN_FDS_START)
+        .unwrap_or(0);
+    Some(count)
 }
 
-fn unset_listen_vars() {
+/// Removes the `LISTEN_*` variables.
+///
+/// # Safety
+///
+/// No other thread may read or write the environment while this runs; see
+/// [`Handle::inherited`].
+#[allow(unsafe_code)] // The only place that edits the environment.
+unsafe fn unset_listen_vars() {
     for key in ["LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"] {
-        // SAFETY: `remove_var` is only unsound while another thread reads the
-        // environment, and `inherited` is documented to run before any exists.
-        #[allow(unsafe_code)]
+        // SAFETY: the caller guarantees the environment is not being read.
         unsafe {
             env::remove_var(key);
         }
