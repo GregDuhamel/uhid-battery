@@ -6,6 +6,65 @@ tags consumers pin (`tag = "vX.Y.Z"`).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-08
+
+The API is settled for the daemons that pin it. Every breaking change below
+comes with its before/after.
+
+### Changed
+
+- **Breaking:** readings are a `Reading { percent, charging }` (`Copy`,
+  `Eq`). `Battery::create(handle, &identity, kind, percent, charging)` is now
+  `Battery::create(handle, &identity, kind, Reading::new(percent, charging))`,
+  `update(percent, charging)` is `update(Reading)`, and `percent()` /
+  `charging()` are one `reading() -> Reading`. A `percent` above 100 is still
+  published as 100, and `reading()` says so.
+- **Breaking:** `Battery::serve_until` returns `io::Result<Wakeup>` instead of
+  `io::Result<bool>`: `Wakeup::Wake` (was `true`), `Wakeup::Deadline` and
+  `Wakeup::Interrupted` (both were `false`, with no way to tell them apart).
+  A hung-up, failed or closed wake descriptor is still an error.
+- **Breaking:** `Identity` and `Kind` are `#[non_exhaustive]`. An identity is
+  built with `Identity::new(name, uniq)` and the chained `.phys(..)`,
+  `.vendor(u16)` and `.product(u16)` - the struct literal
+  `Identity { name, phys, uniq, vendor, product }` no longer compiles - and
+  a `match` on `Kind` needs a wildcard arm. The fields of `Identity` stay
+  readable. `vendor` and `product` are `u16`, the width of a USB ID; the
+  wire format is unchanged.
+- **Breaking:** `Handle::inherited*` are built on the new `listen_fds`
+  module; the behaviour is the same.
+- The live test exercises `Kind::Headset` too, and returns with a message
+  instead of failing where `/dev/uhid` does not exist.
+
+### Added
+
+- `CreateError::kind() -> CreateErrorKind`, which says whether the identity
+  is at fault (`InvalidIdentity`: nothing was written, retrying with the same
+  identity is pointless) or the kernel (`Io`: often transient, worth a retry).
+  `into_parts()` still gives the handle back.
+- `uhid_battery::serve_all(&mut [Battery], Option<Instant>, Option<BorrowedFd>)
+  -> Result<Wakeup, ServeError>`: `serve_until` for any number of devices,
+  with an optional deadline. With no battery at all it is a sleep through
+  `poll()`. `ServeError::index()` names the battery that failed, by position
+  in the slice (`None` when the wait itself failed, or the wake descriptor is
+  broken), so a daemon can give up on that one and keep the others;
+  `into_source()` and `From<ServeError> for io::Error` give the plain error.
+- `uhid_battery::poll::poll(fds, timeout)`, the `Duration`-speaking `poll(2)`
+  wrapper every daemon had written for itself, with `PollFd` and `PollFlags`
+  re-exported next to it so a daemon need not depend on `rustix`.
+- `uhid_battery::listen_fds`: the `sd_listen_fds(3)` protocol on its own.
+  `unsafe fn take() -> Vec<(String, OwnedFd)>` returns every passed descriptor
+  with its name and removes the `LISTEN_*` variables; `LISTEN_FDS_START`.
+- Unit tests of the whole `Battery` state machine over a fake `/dev/uhid` (a
+  datagram socket pair): what `create` writes, the settle push after
+  `UHID_START`, `GET_REPORT` answered for the battery report and refused for
+  any other, `SET_REPORT` refused, the re-push scheduled by a charging flip,
+  `serve_until` returning `Wake`, `Deadline` and `Interrupted`, `serve_all`
+  over two devices, `destroy`, and the report length derived from the HID
+  descriptor. `libc` is a dev-dependency for the one test that interrupts a
+  `poll()` with a signal.
+- A *Live* workflow that runs the acceptance tests against the runner's
+  kernel, as root through `sudo`, on every pull request.
+
 ## [0.3.0] - 2026-10-08
 
 ### Changed
@@ -85,7 +144,8 @@ tags consumers pin (`tag = "vX.Y.Z"`).
 - Publish a battery to UPower through a virtual HID device: `Handle`,
   `Battery`, `Identity`, `Kind`, `find_power_supply`.
 
-[Unreleased]: https://github.com/GregDuhamel/uhid-battery/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/GregDuhamel/uhid-battery/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/GregDuhamel/uhid-battery/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/GregDuhamel/uhid-battery/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/GregDuhamel/uhid-battery/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/GregDuhamel/uhid-battery/compare/v0.1.1...v0.1.2

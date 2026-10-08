@@ -1,0 +1,60 @@
+name: Live
+
+# The acceptance tests against the real kernel: create a virtual battery of
+# each kind through /dev/uhid and read it back from sysfs the way UPower does.
+# They need root, which the hosted Ubuntu runner grants through passwordless
+# sudo, and a kernel with uhid and HID battery support, which Ubuntu's has.
+#
+# The test binary is built as the runner's user and run under sudo so that
+# root needs no cargo, no toolchain and no target directory of its own. The
+# tests skip themselves with a message if /dev/uhid does not exist at all;
+# they fail if it exists and the kernel then builds no power supply, which is
+# the very thing they are here to catch.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  live:
+    name: Live (/dev/uhid)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Load the uhid module
+        # Not fatal: without the node the tests say so and return.
+        run: sudo modprobe uhid || true
+
+      - name: Build the live test binary
+        id: build
+        run: |
+          bin=$(cargo test --test live --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "live" and .executable != null) | .executable')
+          test -x "$bin"
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+      - name: Run the live tests as root
+        env:
+          LIVE_TEST_BIN: ${{ steps.build.outputs.bin }}
+        run: sudo -E "$LIVE_TEST_BIN" --ignored --nocapture --test-threads=1
+
+      - name: Kernel log, for when the tests fail
+        if: failure()
+        run: sudo dmesg | tail -50 || true

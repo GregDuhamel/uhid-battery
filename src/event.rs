@@ -207,6 +207,156 @@ fn get_u32(buf: &[u8], offset: usize) -> u32 {
     u32::from_ne_bytes(bytes)
 }
 
+/// The kernel's side of the wire: reading what the daemon wrote, and writing
+/// what the kernel sends. Only the unit tests stand in for the kernel.
+#[cfg(test)]
+pub(crate) mod fake {
+    use super::{
+        Buffer, DATA_MAX, EVENT_SIZE, LEN_NAME, LEN_PHYS, LEN_UNIQ, OFF_CREATE_BUS,
+        OFF_CREATE_NAME, OFF_CREATE_PHYS, OFF_CREATE_PRODUCT, OFF_CREATE_RD_DATA,
+        OFF_CREATE_RD_SIZE, OFF_CREATE_UNIQ, OFF_CREATE_VENDOR, OFF_GET_REPLY_DATA,
+        OFF_GET_REPLY_SIZE, OFF_INPUT_DATA, OFF_INPUT_SIZE, OFF_REPLY_ERR, OFF_REQUEST_ID,
+        OFF_REQUEST_RNUM, OFF_REQUEST_RTYPE, OFF_TYPE, UHID_CREATE2, UHID_DESTROY, UHID_GET_REPORT,
+        UHID_GET_REPORT_REPLY, UHID_INPUT2, UHID_SET_REPORT, UHID_SET_REPORT_REPLY, UHID_START,
+        blank, get_u32, put_u32,
+    };
+
+    /// An event the daemon wrote, decoded the way `uhid_char_write()` reads it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum Sent {
+        Create2 {
+            name: String,
+            phys: String,
+            uniq: String,
+            bus: u16,
+            vendor: u32,
+            product: u32,
+            descriptor: Vec<u8>,
+        },
+        Input2(Vec<u8>),
+        GetReportReply {
+            id: u32,
+            err: u16,
+            data: Vec<u8>,
+        },
+        SetReportReply {
+            id: u32,
+            err: u16,
+        },
+        Destroy,
+        Other(u32),
+    }
+
+    pub(crate) fn decode_sent(buf: &Buffer) -> Sent {
+        match get_u32(buf, OFF_TYPE) {
+            UHID_CREATE2 => {
+                let size = usize::from(get_u16(buf, OFF_CREATE_RD_SIZE)).min(DATA_MAX);
+                Sent::Create2 {
+                    name: get_str(&buf[OFF_CREATE_NAME..OFF_CREATE_NAME + LEN_NAME]),
+                    phys: get_str(&buf[OFF_CREATE_PHYS..OFF_CREATE_PHYS + LEN_PHYS]),
+                    uniq: get_str(&buf[OFF_CREATE_UNIQ..OFF_CREATE_UNIQ + LEN_UNIQ]),
+                    bus: get_u16(buf, OFF_CREATE_BUS),
+                    vendor: get_u32(buf, OFF_CREATE_VENDOR),
+                    product: get_u32(buf, OFF_CREATE_PRODUCT),
+                    descriptor: buf[OFF_CREATE_RD_DATA..OFF_CREATE_RD_DATA + size].to_vec(),
+                }
+            }
+            UHID_INPUT2 => {
+                let size = usize::from(get_u16(buf, OFF_INPUT_SIZE)).min(DATA_MAX);
+                Sent::Input2(buf[OFF_INPUT_DATA..OFF_INPUT_DATA + size].to_vec())
+            }
+            UHID_GET_REPORT_REPLY => {
+                let size = usize::from(get_u16(buf, OFF_GET_REPLY_SIZE)).min(DATA_MAX);
+                Sent::GetReportReply {
+                    id: get_u32(buf, OFF_REQUEST_ID),
+                    err: get_u16(buf, OFF_REPLY_ERR),
+                    data: buf[OFF_GET_REPLY_DATA..OFF_GET_REPLY_DATA + size].to_vec(),
+                }
+            }
+            UHID_SET_REPORT_REPLY => Sent::SetReportReply {
+                id: get_u32(buf, OFF_REQUEST_ID),
+                err: get_u16(buf, OFF_REPLY_ERR),
+            },
+            UHID_DESTROY => Sent::Destroy,
+            other => Sent::Other(other),
+        }
+    }
+
+    /// `UHID_START`, as the kernel sends it when the driver is attached.
+    pub(crate) fn start() -> Buffer {
+        blank(UHID_START)
+    }
+
+    /// `UHID_GET_REPORT`: the kernel wants report `rnum` of type `rtype`, and
+    /// will match the reply on `id`.
+    pub(crate) fn get_report(id: u32, rnum: u8, rtype: u8) -> Buffer {
+        request(UHID_GET_REPORT, id, rnum, rtype)
+    }
+
+    /// `UHID_SET_REPORT`: the kernel wants to write report `rnum`. The `id`,
+    /// `rnum` and `rtype` fields sit where they do in a `GET_REPORT`.
+    pub(crate) fn set_report(id: u32, rnum: u8, rtype: u8) -> Buffer {
+        request(UHID_SET_REPORT, id, rnum, rtype)
+    }
+
+    fn request(kind: u32, id: u32, rnum: u8, rtype: u8) -> Buffer {
+        let mut event = blank(kind);
+        put_u32(&mut event, OFF_REQUEST_ID, id);
+        event[OFF_REQUEST_RNUM] = rnum;
+        event[OFF_REQUEST_RTYPE] = rtype;
+        event
+    }
+
+    /// A NUL-terminated field, as the kernel reads it.
+    fn get_str(field: &[u8]) -> String {
+        let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
+        String::from_utf8_lossy(&field[..end]).into_owned()
+    }
+
+    fn get_u16(buf: &[u8], offset: usize) -> u16 {
+        let mut bytes = [0u8; 2];
+        bytes.copy_from_slice(&buf[offset..offset + 2]);
+        u16::from_ne_bytes(bytes)
+    }
+
+    /// The codecs on both sides of the wire agree with each other.
+    #[test]
+    fn the_fake_kernel_reads_what_the_daemon_writes() {
+        let buf = super::create2("Name", "phys/0", "uniq-1", 0x1234, 0x5678, &[9, 8, 7]).unwrap();
+        assert_eq!(
+            decode_sent(&buf),
+            Sent::Create2 {
+                name: "Name".into(),
+                phys: "phys/0".into(),
+                uniq: "uniq-1".into(),
+                bus: super::BUS_VIRTUAL,
+                vendor: 0x1234,
+                product: 0x5678,
+                descriptor: vec![9, 8, 7],
+            }
+        );
+        assert_eq!(
+            decode_sent(&super::input2(&[1, 50, 0]).unwrap()),
+            Sent::Input2(vec![1, 50, 0])
+        );
+        assert_eq!(decode_sent(&super::destroy()), Sent::Destroy);
+        assert_eq!(decode_sent(&[0u8; EVENT_SIZE]), Sent::Other(0));
+        assert_eq!(
+            super::decode(&get_report(3, 2, super::RTYPE_INPUT)),
+            super::Event::GetReport {
+                id: 3,
+                rnum: 2,
+                rtype: super::RTYPE_INPUT
+            }
+        );
+        assert_eq!(
+            super::decode(&set_report(4, 1, super::RTYPE_INPUT)),
+            super::Event::SetReport { id: 4 }
+        );
+        assert_eq!(super::decode(&start()), super::Event::Start);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

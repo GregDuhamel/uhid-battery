@@ -11,8 +11,9 @@
 //!
 //! ```no_run
 //! use std::time::{Duration, Instant};
-//! use uhid_battery::{Battery, Handle, Identity, Kind};
+//! use uhid_battery::{Battery, Handle, Identity, Kind, Reading, Wakeup};
 //!
+//! # fn read_the_level_somehow() -> Reading { Reading::new(86, false) }
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Passed down by systemd (`OpenFile=/dev/uhid:uhid`), or opened as root.
 //! // SAFETY: first thing in main, before any thread could read the
@@ -22,21 +23,20 @@
 //!     None => Handle::open(uhid_battery::DEV_UHID)?,
 //! };
 //!
-//! let identity = Identity {
-//!     name: "Audeze Maxwell".into(),
-//!     phys: "my-daemon/maxwell".into(),
-//!     uniq: "my-daemon-maxwell".into(),
-//!     vendor: 0x3329,
-//!     product: 0x4b18,
-//! };
-//! let mut battery = Battery::create(handle, &identity, Kind::Headset, 87, false)?;
+//! let identity = Identity::new("Audeze Maxwell", "my-daemon-maxwell")
+//!     .phys("my-daemon/maxwell")
+//!     .vendor(0x3329)
+//!     .product(0x4b18);
+//! let mut battery = Battery::create(handle, &identity, Kind::Headset, Reading::new(87, false))?;
 //! battery.wait_for_power_supply(Duration::from_secs(2))?;
 //!
 //! loop {
-//!     battery.serve_until(Instant::now() + Duration::from_secs(60), None)?;
-//!     battery.update(86, false)?;
+//!     match battery.serve_until(Instant::now() + Duration::from_secs(60), None)? {
+//!         Wakeup::Deadline => battery.update(read_the_level_somehow())?,
+//!         Wakeup::Interrupted | Wakeup::Wake => break,
+//!     }
 //! }
-//! # }
+//! # Ok(()) }
 //! ```
 //!
 //! The crate exists because the kernel and UPower each have rules that are only
@@ -46,10 +46,16 @@
 mod battery;
 mod descriptor;
 mod event;
+#[cfg(test)]
+mod fake;
 mod handle;
+mod identity;
+pub mod listen_fds;
+pub mod poll;
 mod sysfs;
 
-pub use battery::{Battery, CreateError, Identity};
+pub use battery::{Battery, CreateError, CreateErrorKind, Reading, ServeError, Wakeup, serve_all};
 pub use descriptor::Kind;
 pub use handle::{DEV_UHID, Handle};
+pub use identity::Identity;
 pub use sysfs::find_power_supply;

@@ -1,6 +1,6 @@
 [package]
 name = "uhid-battery"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Publish a battery level to UPower and the desktop through a virtual HID device (/dev/uhid)"
@@ -23,3 +23,8 @@ unsafe_code = "deny"
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
+
+[dev-dependencies]
+# Only to interrupt a poll() with a thread-directed signal in the unit tests
+# of `serve_until`; the crate itself handles signals without it.
+libc = "0.2"

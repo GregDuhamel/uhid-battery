@@ -1,15 +1,15 @@
 //! An open `/dev/uhid`, opened here or handed over by the service manager.
 
-use std::env;
 use std::fs::OpenOptions;
 use std::io;
-use std::os::fd::{AsFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use rustix::fs::{FileType, OFlags, fcntl_getfl, fcntl_setfl, fstat, makedev};
-use rustix::io::{Errno, FdFlags, fcntl_setfd};
+use rustix::io::Errno;
 
 use crate::event::{self, Buffer, EVENT_SIZE, Event};
+use crate::listen_fds;
 
 /// Default path of the uhid character device.
 pub const DEV_UHID: &str = "/dev/uhid";
@@ -17,9 +17,6 @@ pub const DEV_UHID: &str = "/dev/uhid";
 /// `/dev/uhid` is the misc device (major 10) with minor 239 (`UHID_MINOR`).
 const UHID_MAJOR: u32 = 10;
 const UHID_MINOR: u32 = 239;
-
-/// First descriptor number passed by the service manager (`sd_listen_fds(3)`).
-const LISTEN_FDS_START: RawFd = 3;
 
 /// An open handle on `/dev/uhid`, able to back one virtual device at a time.
 ///
@@ -68,6 +65,17 @@ impl Handle {
         Ok(Self { fd })
     }
 
+    /// Adopts `fd` without checking that it is `/dev/uhid`, so the unit tests
+    /// can stand a socket in for the kernel.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the descriptor cannot be made non-blocking.
+    #[cfg(test)]
+    pub(crate) fn from_fd_unchecked(fd: OwnedFd) -> io::Result<Self> {
+        Self::adopt(fd)
+    }
+
     /// Takes the descriptors the service manager passed under a name starting
     /// with `prefix`, for instance `uhid` for a unit that says
     /// `OpenFile=/dev/uhid:uhid`.
@@ -80,20 +88,18 @@ impl Handle {
     /// Returns an empty vector when the process was not started that way.
     /// Every other descriptor the service manager passed is closed - one under
     /// another name, or one that turns out not to be `/dev/uhid`. A daemon that
-    /// is also handed a socket wants [`Handle::inherited_with_others`] instead.
-    /// Whenever the `LISTEN_*` variables are addressed to this process they
-    /// are removed, even when they announce no descriptor, so neither a second
-    /// call nor a child process claims the same descriptors. Variables meant
-    /// for a parent are left alone.
+    /// is also handed a socket wants [`Handle::inherited_with_others`] instead,
+    /// and one with its own ideas about names can filter
+    /// [`listen_fds::take`] itself and go through [`Handle::from_fd`]. The
+    /// `LISTEN_*` variables are removed as [`listen_fds::take`] describes.
     ///
     /// # Safety
     ///
-    /// The variables are removed with [`std::env::remove_var`], which is a
-    /// data race against any other thread that reads or writes the
-    /// environment - through `std::env`, through `getenv(3)` in a C library,
-    /// or by a crate doing either. The caller guarantees that no such thread
-    /// exists while this runs, which in practice means calling it at the top
-    /// of `main`, before anything is spawned.
+    /// As for [`listen_fds::take`]: the variables are removed with
+    /// [`std::env::remove_var`], which is a data race against any other thread
+    /// that reads or writes the environment. The caller guarantees that no
+    /// such thread exists while this runs, which in practice means calling it
+    /// at the top of `main`, before anything is spawned.
     #[allow(unsafe_code)] // Honest about `remove_var`; see the Safety section.
     #[must_use]
     pub unsafe fn inherited(prefix: &str) -> Vec<Self> {
@@ -115,43 +121,29 @@ impl Handle {
     #[allow(unsafe_code)] // Honest about `remove_var`; see the Safety section.
     #[must_use]
     pub unsafe fn inherited_with_others(prefix: &str) -> (Vec<Self>, Vec<(String, OwnedFd)>) {
-        let Some(count) = listen_fds_count() else {
-            return (Vec::new(), Vec::new());
-        };
-        let names = env::var("LISTEN_FDNAMES").unwrap_or_default();
-        let mut names = names.split(':');
+        // SAFETY: the caller upholds the contract of `take`, which is ours.
+        let passed = unsafe { listen_fds::take() };
+        Self::adopt_named(passed, prefix)
+    }
 
+    /// Sorts passed descriptors into handles - those named with `prefix` that
+    /// really are `/dev/uhid` - and the rest.
+    fn adopt_named(
+        passed: Vec<(String, OwnedFd)>,
+        prefix: &str,
+    ) -> (Vec<Self>, Vec<(String, OwnedFd)>) {
         let mut handles = Vec::new();
         let mut others = Vec::new();
-        for offset in 0..count {
-            let name = names.next().unwrap_or_default();
-            // SAFETY: by the sd_listen_fds protocol the descriptors in
-            // `LISTEN_FDS_START..LISTEN_FDS_START + count` belong to this
-            // process, this is the only place that adopts them, and the
-            // variables are cleared below so nothing adopts them again.
-            let fd = unsafe { OwnedFd::from_raw_fd(LISTEN_FDS_START + offset) };
-            // Passed descriptors come without FD_CLOEXEC. A failure means the
-            // environment lied and the number is not an open descriptor: let
-            // go of it without closing what is not ours, and stop there, as
-            // sd_listen_fds(3) does - the numbers after it are no more
-            // trustworthy, and the names no longer line up with anything.
-            if fcntl_setfd(&fd, FdFlags::CLOEXEC).is_err() {
-                let _ = fd.into_raw_fd();
-                break;
-            }
-
+        for (name, fd) in passed {
             if name.starts_with(prefix) && is_uhid(&fd).unwrap_or(false) {
                 // Only fcntl() can still fail, and it took the descriptor.
                 if let Ok(handle) = Self::adopt(fd) {
                     handles.push(handle);
                 }
             } else {
-                others.push((name.to_owned(), fd));
+                others.push((name, fd));
             }
         }
-
-        // SAFETY: the caller guarantees no thread touches the environment.
-        unsafe { unset_listen_vars() };
         (handles, others)
     }
 
@@ -208,43 +200,6 @@ fn is_uhid(fd: &OwnedFd) -> io::Result<bool> {
     )
 }
 
-/// How many descriptors `LISTEN_FDS` announces, when the `LISTEN_*` variables
-/// are addressed to this process. `None` when they are absent or meant for a
-/// parent - and then they are not ours to remove either.
-fn listen_fds_count() -> Option<RawFd> {
-    let pid: u32 = env::var("LISTEN_PID").ok()?.parse().ok()?;
-    if pid != std::process::id() {
-        // Meant for a parent of ours; not ours to touch.
-        return None;
-    }
-    // Ours. A missing or unparsable count, or one past the bounds
-    // sd_listen_fds(3) applies (the last descriptor number has to be one a
-    // descriptor can have), announces nothing - but the variables still get
-    // removed, as they would for a plain `LISTEN_FDS=0`.
-    let count = env::var("LISTEN_FDS")
-        .ok()
-        .and_then(|count| count.parse::<RawFd>().ok())
-        .filter(|&count| count > 0 && count <= RawFd::MAX - LISTEN_FDS_START)
-        .unwrap_or(0);
-    Some(count)
-}
-
-/// Removes the `LISTEN_*` variables.
-///
-/// # Safety
-///
-/// No other thread may read or write the environment while this runs; see
-/// [`Handle::inherited`].
-#[allow(unsafe_code)] // The only place that edits the environment.
-unsafe fn unset_listen_vars() {
-    for key in ["LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"] {
-        // SAFETY: the caller guarantees the environment is not being read.
-        unsafe {
-            env::remove_var(key);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs::File;
@@ -260,6 +215,22 @@ mod tests {
 
         let regular = OwnedFd::from(File::open("/proc/self/status").unwrap());
         assert!(Handle::from_fd(regular).is_err());
+    }
+
+    #[test]
+    fn passed_descriptors_are_sorted_by_name_and_by_what_they_are() {
+        // Nothing here is uhid, so every descriptor comes back as "other" -
+        // including the one named right: the name is not proof.
+        let null = || OwnedFd::from(File::open("/dev/null").unwrap());
+        let passed = vec![
+            ("uhid".to_owned(), null()),
+            ("socket".to_owned(), null()),
+            (String::new(), null()),
+        ];
+        let (handles, others) = Handle::adopt_named(passed, "uhid");
+        assert_eq!(handles.len(), 0);
+        let names: Vec<&str> = others.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["uhid", "socket", ""]);
     }
 
     #[test]

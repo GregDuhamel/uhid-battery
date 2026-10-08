@@ -18,7 +18,11 @@
 ///
 /// UPower types a HID battery after its sibling input node, so the kind decides
 /// which input usages the descriptor declares next to the battery.
+///
+/// `#[non_exhaustive]`: a kind for the next class of peripheral may be added
+/// without breaking the daemons that match on this one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Kind {
     /// A pointer: udev tags the input node `ID_INPUT_MOUSE` and UPower reports
     /// a mouse. The pointer is never moved.
@@ -198,6 +202,50 @@ const fn concat_bytes(parts: &[&[u8]]) -> Assembled {
     Assembled { bytes, len }
 }
 
+/// Size in bytes, report ID included, of input report `wanted` as the
+/// descriptor declares it: the sum of `Report Size x Report Count` over its
+/// `Input` items, rounded up to whole bytes, plus the ID byte.
+///
+/// A walk over the short items of the HID report descriptor format (section
+/// 6.2.2.2 of the HID 1.11 specification): one prefix byte - two bits of data
+/// size, two of type, four of tag - then the data. The three globals that size
+/// a report are tracked; everything else is skipped over.
+#[cfg(test)]
+pub(crate) fn input_report_len(descriptor: &[u8], wanted: u8) -> usize {
+    const TYPE_MAIN: u8 = 0;
+    const TYPE_GLOBAL: u8 = 1;
+    const TAG_INPUT: u8 = 0x8;
+    const TAG_REPORT_SIZE: u8 = 0x7;
+    const TAG_REPORT_ID: u8 = 0x8;
+    const TAG_REPORT_COUNT: u8 = 0x9;
+
+    let (mut size, mut count, mut id) = (0usize, 0usize, None);
+    let mut bits = 0usize;
+    let mut at = 0;
+    while at < descriptor.len() {
+        let prefix = descriptor[at];
+        let len = match prefix & 0b11 {
+            3 => 4,
+            n => usize::from(n),
+        };
+        let data = &descriptor[at + 1..at + 1 + len];
+        let value = data
+            .iter()
+            .rev()
+            .fold(0usize, |acc, &byte| (acc << 8) | usize::from(byte));
+        match ((prefix >> 2) & 0b11, prefix >> 4) {
+            (TYPE_GLOBAL, TAG_REPORT_SIZE) => size = value,
+            (TYPE_GLOBAL, TAG_REPORT_COUNT) => count = value,
+            (TYPE_GLOBAL, TAG_REPORT_ID) => id = Some(value),
+            (TYPE_MAIN, TAG_INPUT) if id == Some(usize::from(wanted)) => bits += size * count,
+            _ => {}
+        }
+        at += 1 + len;
+    }
+    assert!(bits > 0, "no Input item in report {wanted}");
+    bits.div_ceil(8) + 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +304,16 @@ mod tests {
                 .map(|w| w[1]);
             assert_eq!(id, Some(kind.report_id()), "{kind:?}");
         }
+    }
+
+    #[test]
+    fn the_descriptor_walk_reads_report_sizes() {
+        // The pointer report of the mouse: 3 buttons + 5 bits of padding,
+        // then X and Y - 24 bits, plus the ID.
+        assert_eq!(input_report_len(Kind::Mouse.descriptor(), 1), 4);
+        // The battery report: 8 bits of level, the charging bit, padding.
+        assert_eq!(input_report_len(Kind::Mouse.descriptor(), 2), 3);
+        assert_eq!(input_report_len(Kind::Generic.descriptor(), 1), 3);
     }
 
     #[test]
