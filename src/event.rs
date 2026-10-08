@@ -24,7 +24,7 @@ const UHID_SET_REPORT: u32 = 13;
 const UHID_SET_REPORT_REPLY: u32 = 14;
 
 /// `UHID_INPUT_REPORT`, the `rtype` of a request about an input report.
-pub(crate) const RTYPE_INPUT: u8 = 2;
+pub const RTYPE_INPUT: u8 = 2;
 
 /// `EIO`, the error carried by replies to requests we do not serve.
 pub(crate) const EIO: u16 = 5;
@@ -49,7 +49,7 @@ pub(crate) const RD_DATA_MAX: usize = 4096;
 const DATA_MAX: usize = 4096;
 
 /// Size of `struct uhid_event`: the type tag plus its largest union member.
-pub(crate) const EVENT_SIZE: usize = OFF_CREATE_RD_DATA + RD_DATA_MAX;
+pub const EVENT_SIZE: usize = OFF_CREATE_RD_DATA + RD_DATA_MAX;
 
 const OFF_INPUT_SIZE: usize = 4;
 const OFF_INPUT_DATA: usize = 6;
@@ -62,7 +62,7 @@ const OFF_GET_REPLY_DATA: usize = 12;
 
 /// A full-size, zeroed event. The kernel copies `min(len, sizeof(event))`, so
 /// always writing the whole structure is both simplest and exact.
-pub(crate) type Buffer = [u8; EVENT_SIZE];
+pub type Buffer = [u8; EVENT_SIZE];
 
 /// An event received from the kernel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,42 +208,61 @@ fn get_u32(buf: &[u8], offset: usize) -> u32 {
 }
 
 /// The kernel's side of the wire: reading what the daemon wrote, and writing
-/// what the kernel sends. Only the unit tests stand in for the kernel.
-#[cfg(test)]
+/// what the kernel sends. Only the unit tests stand in for the kernel - this
+/// crate's, and under the `fake` feature those of the daemons built on it,
+/// through [`crate::fake`].
+#[cfg(any(test, feature = "fake"))]
 pub(crate) mod fake {
     use super::{
-        Buffer, DATA_MAX, EVENT_SIZE, LEN_NAME, LEN_PHYS, LEN_UNIQ, OFF_CREATE_BUS,
-        OFF_CREATE_NAME, OFF_CREATE_PHYS, OFF_CREATE_PRODUCT, OFF_CREATE_RD_DATA,
-        OFF_CREATE_RD_SIZE, OFF_CREATE_UNIQ, OFF_CREATE_VENDOR, OFF_GET_REPLY_DATA,
-        OFF_GET_REPLY_SIZE, OFF_INPUT_DATA, OFF_INPUT_SIZE, OFF_REPLY_ERR, OFF_REQUEST_ID,
-        OFF_REQUEST_RNUM, OFF_REQUEST_RTYPE, OFF_TYPE, UHID_CREATE2, UHID_DESTROY, UHID_GET_REPORT,
-        UHID_GET_REPORT_REPLY, UHID_INPUT2, UHID_SET_REPORT, UHID_SET_REPORT_REPLY, UHID_START,
-        blank, get_u32, put_u32,
+        Buffer, DATA_MAX, LEN_NAME, LEN_PHYS, LEN_UNIQ, OFF_CREATE_BUS, OFF_CREATE_NAME,
+        OFF_CREATE_PHYS, OFF_CREATE_PRODUCT, OFF_CREATE_RD_DATA, OFF_CREATE_RD_SIZE,
+        OFF_CREATE_UNIQ, OFF_CREATE_VENDOR, OFF_GET_REPLY_DATA, OFF_GET_REPLY_SIZE, OFF_INPUT_DATA,
+        OFF_INPUT_SIZE, OFF_REPLY_ERR, OFF_REQUEST_ID, OFF_REQUEST_RNUM, OFF_REQUEST_RTYPE,
+        OFF_TYPE, UHID_CREATE2, UHID_DESTROY, UHID_GET_REPORT, UHID_GET_REPORT_REPLY, UHID_INPUT2,
+        UHID_SET_REPORT, UHID_SET_REPORT_REPLY, UHID_START, blank, get_u32, put_u32,
     };
 
     /// An event the daemon wrote, decoded the way `uhid_char_write()` reads it.
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum Sent {
+    pub enum Sent {
+        /// `UHID_CREATE2`: a device with this identity and descriptor.
         Create2 {
+            /// The device name.
             name: String,
+            /// The physical location.
             phys: String,
+            /// The unique ID.
             uniq: String,
+            /// The bus, `BUS_VIRTUAL` for this crate's devices.
             bus: u16,
+            /// The vendor ID.
             vendor: u32,
+            /// The product ID.
             product: u32,
+            /// The report descriptor.
             descriptor: Vec<u8>,
         },
+        /// `UHID_INPUT2`: an input report, its ID first.
         Input2(Vec<u8>),
+        /// `UHID_GET_REPORT_REPLY`: the answer to a `GET_REPORT`.
         GetReportReply {
+            /// The request being answered.
             id: u32,
+            /// Zero, or an errno refusing the request.
             err: u16,
+            /// The report, empty when refused.
             data: Vec<u8>,
         },
+        /// `UHID_SET_REPORT_REPLY`: the answer to a `SET_REPORT`.
         SetReportReply {
+            /// The request being answered.
             id: u32,
+            /// Zero, or an errno refusing the request.
             err: u16,
         },
+        /// `UHID_DESTROY`.
         Destroy,
+        /// Any other event type.
         Other(u32),
     }
 
@@ -283,19 +302,22 @@ pub(crate) mod fake {
     }
 
     /// `UHID_START`, as the kernel sends it when the driver is attached.
-    pub(crate) fn start() -> Buffer {
+    #[must_use]
+    pub fn start() -> Buffer {
         blank(UHID_START)
     }
 
     /// `UHID_GET_REPORT`: the kernel wants report `rnum` of type `rtype`, and
     /// will match the reply on `id`.
-    pub(crate) fn get_report(id: u32, rnum: u8, rtype: u8) -> Buffer {
+    #[must_use]
+    pub fn get_report(id: u32, rnum: u8, rtype: u8) -> Buffer {
         request(UHID_GET_REPORT, id, rnum, rtype)
     }
 
     /// `UHID_SET_REPORT`: the kernel wants to write report `rnum`. The `id`,
     /// `rnum` and `rtype` fields sit where they do in a `GET_REPORT`.
-    pub(crate) fn set_report(id: u32, rnum: u8, rtype: u8) -> Buffer {
+    #[must_use]
+    pub fn set_report(id: u32, rnum: u8, rtype: u8) -> Buffer {
         request(UHID_SET_REPORT, id, rnum, rtype)
     }
 
@@ -340,7 +362,7 @@ pub(crate) mod fake {
             Sent::Input2(vec![1, 50, 0])
         );
         assert_eq!(decode_sent(&super::destroy()), Sent::Destroy);
-        assert_eq!(decode_sent(&[0u8; EVENT_SIZE]), Sent::Other(0));
+        assert_eq!(decode_sent(&[0u8; super::EVENT_SIZE]), Sent::Other(0));
         assert_eq!(
             super::decode(&get_report(3, 2, super::RTYPE_INPUT)),
             super::Event::GetReport {

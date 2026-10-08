@@ -6,6 +6,17 @@ tags consumers pin (`tag = "vX.Y.Z"`).
 
 ## [Unreleased]
 
+### Added
+
+- A `fake` feature, for the unit tests of the daemons built on this crate: it
+  makes the fake kernel the crate's own tests use public as
+  `uhid_battery::fake` (`Kernel` on a datagram socket pair, the `Sent`
+  events it reads back, `start` and `get_report` to send the kernel's
+  requests) along with `Handle::from_fd_unchecked`, so a daemon can drive a
+  real `Battery` through `create`, `update`, `serve_all` and `destroy`
+  without `/dev/uhid` or root. Tests only - enable it from the
+  dev-dependencies alone - and outside the API's stability promise.
+
 ### Fixed
 
 - The unit tests' hung-up wake descriptor is an in-process pipe: the child
