@@ -28,9 +28,14 @@ It is not on crates.io; depend on it through git, pinned to a release tag:
 uhid-battery = { git = "https://github.com/GregDuhamel/uhid-battery", tag = "v0.4.0" }
 ```
 
-Releases are cut from the *Release* workflow (Actions → Release → Run workflow,
-pick the semver bump): it runs the lints and tests, writes the version to
-`Cargo.toml` and to the snippet above, tags, and publishes the GitHub release.
+Releases are made in two steps. The pull request bumps the version in
+`Cargo.toml` and `Cargo.lock` (`cargo update --workspace`) and to the
+`tag = "vX.Y.Z"` snippet above, with its
+CHANGELOG entry. Once it is on `main`, the *Release* workflow (Actions →
+Release → Run workflow) checks the three agree, refuses a version that is
+already tagged, runs the lints and tests, tags `main` and publishes the
+GitHub release. It never commits: `main` only takes signed commits through
+pull requests.
 
 ```rust
 use std::time::{Duration, Instant};
