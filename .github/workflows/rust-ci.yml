@@ -150,8 +150,16 @@ jobs:
       - name: Test
         run: cargo test --locked --all-targets ${{ inputs.test-args }}
 
+      # Only a library has doc tests: on a binary-only crate `cargo test --doc`
+      # fails with "no library targets found", so the step looks first.
       - name: Doc tests
-        run: cargo test --locked --doc ${{ inputs.test-args }}
+        run: |
+          if cargo metadata --locked --no-deps --format-version 1 \
+             | jq -e '[.packages[].targets[] | select(.kind | index("lib"))] | length > 0' >/dev/null; then
+            cargo test --locked --doc ${{ inputs.test-args }}
+          else
+            echo "no library target: nothing to doc-test"
+          fi
 
   rustdoc:
     name: rustdoc
