@@ -6,6 +6,10 @@ tags consumers pin (`tag = "vX.Y.Z"`).
 
 ## [Unreleased]
 
+### Changed
+
+- Dependencies refreshed (rustix 1.1.6, libc 0.2.191) and the pinned GitHub Actions bumped; no code change.
+
 ### Added
 
 - A `fake` feature, for the unit tests of the daemons built on this crate: it
