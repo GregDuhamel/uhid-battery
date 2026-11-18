@@ -52,8 +52,8 @@ name: Rust CI
 # permissions below are the ceiling a caller can rely on; a caller that grants
 # less wins.
 #
-# Actions are pinned to a commit; dependabot (github-actions ecosystem) moves
-# the pins in this repository, and the callers follow `@main`.
+# Actions follow their major tag (checkout@v7, rust-cache@v2…) so patch
+# releases arrive on their own; dependabot only reports a new major.
 
 on:
   workflow_call:
@@ -105,10 +105,9 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: rustfmt
       - run: cargo fmt --all --check
 
@@ -116,12 +115,11 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --locked --all-targets ${{ inputs.all-features && '--all-features' || '' }} -- -D warnings
 
   test:
@@ -133,14 +131,14 @@ jobs:
         # stable, plus the MSRV when the caller declares one.
         rust: ${{ fromJSON(inputs.msrv != '' && format('["stable", "{0}"]', inputs.msrv) || '["stable"]') }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
 
       - name: Install Rust ${{ matrix.rust }}
-        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.rust }}
 
@@ -167,11 +165,9 @@ jobs:
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo doc --locked --no-deps ${{ inputs.all-features && '--all-features' || '' }} ${{ inputs.doc-private-items && '--document-private-items' || '' }}
 
   audit:
@@ -179,9 +175,9 @@ jobs:
     if: ${{ inputs.audit }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
       # A prebuilt, checksummed cargo-audit: no compile, no toolchain.
-      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
       # cargo-audit reads the committed Cargo.lock.
