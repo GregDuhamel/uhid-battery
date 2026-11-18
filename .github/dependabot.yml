@@ -8,7 +8,8 @@ updates:
       cargo:
         patterns: ["*"]
 
-  # The workflows pin actions to a commit; this is what moves the pins.
+  # The workflows follow each action's major tag (v7, v2…) so patch releases
+  # arrive on their own; this only catches a new major.
   - package-ecosystem: github-actions
     directory: /
     schedule:
